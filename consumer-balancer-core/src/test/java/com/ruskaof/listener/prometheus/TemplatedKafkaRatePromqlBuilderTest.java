@@ -1,4 +1,4 @@
-package com.ruskaof.balancer.prometheus;
+package io.github.ruskaof.balancer.prometheus;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Disabled;

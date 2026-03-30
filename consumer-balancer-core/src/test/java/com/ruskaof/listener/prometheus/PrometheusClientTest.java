@@ -1,7 +1,7 @@
-package com.ruskaof.balancer.prometheus;
+package io.github.ruskaof.balancer.prometheus;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ruskaof.balancer.prometheus.model.PromqlResponse;
+import io.github.ruskaof.balancer.prometheus.model.PromqlResponse;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
