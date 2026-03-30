@@ -1,0 +1,4 @@
+# Required PromQL for tests that load the default Prometheus weight store
+consumer-balancer:
+  prometheus:
+    weight-query-template: 'sum(rate(kafka_topic_partition_current_offset{topic=~"%s"}[1m])) by (topic, partition)'

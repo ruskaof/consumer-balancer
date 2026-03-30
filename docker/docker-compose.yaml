@@ -1,0 +1,112 @@
+services:
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:9091,CONTROLLER://localhost:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:9091
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: ${PARTITIONS_COUNT}
+    ports:
+      - "9092:9092"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "kafka:9091", "--describe"]
+
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      DYNAMIC_CONFIG_ENABLED: 'true'
+    volumes:
+      - ./kui/config.yml:/etc/kafkaui/dynamic_config.yaml
+    networks:
+      - backend
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter
+    command: [ "--kafka.server=kafka:9091" ]
+    ports:
+      - "9308:9308"
+    networks:
+      - backend
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - backend
+
+  listener-default:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: org.apache.kafka.clients.consumer.RoundRobinAssignor
+      KAFKA_CONSUMER_GROUP: listener-default
+      KAFKA_BALANCER_ENABLED: false
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  listener-balanced:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: com.ruskaof.listener.LoadAwarePartitionAssignor
+      KAFKA_CONSUMER_GROUP: listener-balanced
+      KAFKA_BALANCER_ENABLED: true
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  load-generator:
+    build: ../test-scripts/load-generator
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      TOPIC: test-topic
+      PARTITIONS_COUNT: ${PARTITIONS_COUNT}
+      GRAPH_OUTPUT_DIR: /test-out/result-default
+      PROMETHEUS_URL: prometheus:9090
+    volumes:
+      - ../test-out:/test-out
+    depends_on:
+      - listener-default
+      - listener-balanced
+    networks:
+      - backend
+
+networks:
+  backend:

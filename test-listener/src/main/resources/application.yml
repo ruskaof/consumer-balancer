@@ -1,0 +1,32 @@
+spring:
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    listener:
+      concurrency: ${LISTENER_CONCURRENCY:5}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:test-group}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      properties:
+        partition.assignment.strategy: ${KAFKA_ASSIGNMENT_STRATEGY:com.ruskaof.listener.LoadAwarePartitionAssignor}
+
+server:
+  port: 4314
+
+management:
+  endpoint:
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+    health:
+      probes:
+        enabled: true
+  endpoints.web.exposure.include: health,prometheus
+
+consumer-balancer:
+  enabled: ${KAFKA_BALANCER_ENABLED:true}
+  prometheus:
+    weight-query-template: 'sum(rate(kafka_topic_partition_current_offset{topic=~"%s"}[1m])) by (topic, partition)'
+    host: ${PROMETHEUS_HOST:localhost}
+    port: ${PROMETHEUS_PORT:9090}
