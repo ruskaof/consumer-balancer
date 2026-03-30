@@ -1,4 +1,4 @@
-package com.ruskaof.listener.prometheus;
+package com.ruskaof.balancer.prometheus;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;

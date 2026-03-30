@@ -8,7 +8,7 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
       properties:
-        partition.assignment.strategy: ${KAFKA_ASSIGNMENT_STRATEGY:com.ruskaof.listener.LoadAwarePartitionAssignor}
+        partition.assignment.strategy: ${KAFKA_ASSIGNMENT_STRATEGY:com.ruskaof.balancer.LoadAwarePartitionAssignor}
 
 server:
   port: 4314

@@ -1,4 +1,4 @@
-package com.ruskaof.listener.trigger;
+package com.ruskaof.balancer.trigger;
 
 @FunctionalInterface
 public interface RebalanceTrigger {

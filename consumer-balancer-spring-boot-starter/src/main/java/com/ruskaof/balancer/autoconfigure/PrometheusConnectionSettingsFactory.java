@@ -1,9 +1,10 @@
 package com.ruskaof.balancer.autoconfigure;
 
-import com.ruskaof.listener.prometheus.PrometheusConnectionSettings;
+import com.ruskaof.balancer.prometheus.PrometheusConnectionSettings;
 
 /**
- * Maps {@link KafkaBalancerProperties} to core {@link PrometheusConnectionSettings}.
+ * Maps {@link KafkaBalancerProperties} to core
+ * {@link PrometheusConnectionSettings}.
  */
 public final class PrometheusConnectionSettingsFactory {
 
@@ -17,7 +18,6 @@ public final class PrometheusConnectionSettingsFactory {
                 p.getHost(),
                 p.getPort(),
                 p.getConnectTimeout(),
-                p.getRequestTimeout()
-        );
+                p.getRequestTimeout());
     }
 }

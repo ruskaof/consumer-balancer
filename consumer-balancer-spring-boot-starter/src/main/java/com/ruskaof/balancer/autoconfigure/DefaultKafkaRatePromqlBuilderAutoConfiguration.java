@@ -1,8 +1,8 @@
 package com.ruskaof.balancer.autoconfigure;
 
-import com.ruskaof.listener.prometheus.KafkaRatePromqlBuilder;
-import com.ruskaof.listener.prometheus.TemplatedKafkaRatePromqlBuilder;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder;
+import com.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
+import com.ruskaof.balancer.weight.WeightService;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

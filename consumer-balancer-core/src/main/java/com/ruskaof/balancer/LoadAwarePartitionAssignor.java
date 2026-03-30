@@ -1,13 +1,13 @@
-package com.ruskaof.listener;
+package com.ruskaof.balancer;
 
-import com.ruskaof.listener.balance.BalanceService;
-import com.ruskaof.listener.balance.SortingRoundRobinBalanceService;
-import com.ruskaof.listener.prometheus.TemplatedKafkaRatePromqlBuilder;
-import com.ruskaof.listener.prometheus.PrometheusClient;
-import com.ruskaof.listener.prometheus.PrometheusConnectionSettings;
-import com.ruskaof.listener.prometheus.PrometheusObjectMappers;
-import com.ruskaof.listener.weight.PrometheusWeightService;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.balance.BalanceService;
+import com.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import com.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
+import com.ruskaof.balancer.prometheus.PrometheusClient;
+import com.ruskaof.balancer.prometheus.PrometheusConnectionSettings;
+import com.ruskaof.balancer.prometheus.PrometheusObjectMappers;
+import com.ruskaof.balancer.weight.PrometheusWeightService;
+import com.ruskaof.balancer.weight.WeightService;
 import lombok.NoArgsConstructor;
 import org.apache.kafka.clients.consumer.RoundRobinAssignor;
 import org.apache.kafka.clients.consumer.internals.AbstractPartitionAssignor;
@@ -45,10 +45,10 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             return fallbackAssignor.assign(partitionsPerTopic, subscriptions);
         }
     }
-    
+
     private Map<String, List<TopicPartition>> assignWithLoadAwareness(
             Map<String, Integer> partitionsPerTopic,
-            Map<String, Subscription> subscriptions)  {
+            Map<String, Subscription> subscriptions) {
 
         var weights = weightService.computeWeights(getAllPartitions(partitionsPerTopic));
         var members = subscriptions.keySet();
@@ -78,12 +78,10 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                 configs,
                 LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE,
                 "Required when using load-aware assignor: assignor.load-aware.prometheus.weight-query-template "
-                        + "(must contain %s)"
-        );
+                        + "(must contain %s)");
         this.weightService = new PrometheusWeightService(
                 new TemplatedKafkaRatePromqlBuilder(weightQueryTemplate),
-                prometheusClient
-        );
+                prometheusClient);
     }
 
     public static class LoadAwareAssignorConfig {
@@ -110,8 +108,7 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                     host,
                     port,
                     Duration.ofMillis(connectMs),
-                    Duration.ofMillis(requestMs)
-            );
+                    Duration.ofMillis(requestMs));
         }
 
         private static long parseLong(Map<String, ?> configs, String key, long defaultValue) {

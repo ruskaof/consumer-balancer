@@ -1,8 +1,7 @@
-package com.ruskaof.listener.prometheus;
+package com.ruskaof.balancer.prometheus;
 
 import java.util.Objects;
 import java.util.StringJoiner;
-
 
 public class TemplatedKafkaRatePromqlBuilder extends KafkaRatePromqlBuilder {
 

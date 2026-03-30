@@ -1,4 +1,4 @@
-package com.ruskaof.listener.weight;
+package com.ruskaof.balancer.weight;
 
 import org.apache.kafka.common.TopicPartition;
 
@@ -8,6 +8,5 @@ import java.util.Set;
 public interface WeightService {
 
     Map<TopicPartition, Double> computeWeights(
-            Set<TopicPartition> allPartitions
-    );
+            Set<TopicPartition> allPartitions);
 }

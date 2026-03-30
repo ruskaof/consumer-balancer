@@ -1,4 +1,4 @@
-package com.ruskaof.listener.trigger;
+package com.ruskaof.balancer.trigger;
 
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -7,7 +7,8 @@ public class PeriodicTrigger implements RebalanceTrigger {
     private final AtomicLong lastTriggerTime = new AtomicLong(0);
 
     public PeriodicTrigger(long intervalMs) {
-        if (intervalMs <= 0) throw new IllegalArgumentException("Interval must be positive");
+        if (intervalMs <= 0)
+            throw new IllegalArgumentException("Interval must be positive");
         this.intervalMs = intervalMs;
     }
 

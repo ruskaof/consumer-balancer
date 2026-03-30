@@ -1,4 +1,4 @@
-package com.ruskaof.listener.trigger;
+package com.ruskaof.balancer.trigger;
 
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.*;
@@ -49,10 +49,12 @@ public class CoordinatorElection implements AutoCloseable {
     }
 
     private void runElection() {
-        if (!running.get()) return;
+        if (!running.get())
+            return;
 
         try {
-            DescribeConsumerGroupsResult result = adminClient.describeConsumerGroups(Collections.singletonList(groupId));
+            DescribeConsumerGroupsResult result = adminClient
+                    .describeConsumerGroups(Collections.singletonList(groupId));
             ConsumerGroupDescription desc = result.describedGroups().get(groupId).get();
 
             List<String> sortedMembers = desc.members().stream()
@@ -62,12 +64,15 @@ public class CoordinatorElection implements AutoCloseable {
 
             Set<String> currentMemberIds = memberIdsSupplier.get();
 
-            boolean newStatus = currentMemberIds.stream().anyMatch((memberId) -> memberId.equals(sortedMembers.getFirst()));
-            log.info("Current memberIds: {}, sortedMemberIds:{}, election result: {}", currentMemberIds, sortedMembers, newStatus);
+            boolean newStatus = currentMemberIds.stream()
+                    .anyMatch((memberId) -> memberId.equals(sortedMembers.getFirst()));
+            log.info("Current memberIds: {}, sortedMemberIds:{}, election result: {}", currentMemberIds, sortedMembers,
+                    newStatus);
 
             if (isCoordinator.getAndSet(newStatus) != newStatus) {
                 log.info("Coordinator status changed [group={}]: isCoordinator={} (memberIds={}, smallest={})",
-                        groupId, newStatus, currentMemberIds, sortedMembers.isEmpty() ? "N/A" : sortedMembers.getFirst());
+                        groupId, newStatus, currentMemberIds,
+                        sortedMembers.isEmpty() ? "N/A" : sortedMembers.getFirst());
                 notifyListeners(newStatus);
             }
         } catch (Exception e) {
@@ -104,7 +109,8 @@ public class CoordinatorElection implements AutoCloseable {
         if (running.compareAndSet(true, false)) {
             scheduler.shutdown();
             try {
-                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) scheduler.shutdownNow();
+                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS))
+                    scheduler.shutdownNow();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 scheduler.shutdownNow();
@@ -121,7 +127,10 @@ public class CoordinatorElection implements AutoCloseable {
         private Supplier<Set<String>> memberIdsSupplier;
         private long electionIntervalMs = 30_000;
         private Properties adminProps = new Properties();
-        /** When set, used instead of creating a new {@link AdminClient} from {@link #adminProps}. */
+        /**
+         * When set, used instead of creating a new {@link AdminClient} from
+         * {@link #adminProps}.
+         */
         private AdminClient adminClient;
 
         public CoordinatorElection build() {

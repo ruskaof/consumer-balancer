@@ -1,8 +1,8 @@
-package com.ruskaof.listener;
+package com.ruskaof.balancer;
 
-import com.ruskaof.listener.balance.BalanceService;
-import com.ruskaof.listener.balance.SortingRoundRobinBalanceService;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.balance.BalanceService;
+import com.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import com.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.Subscription;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
@@ -14,7 +14,8 @@ import java.util.*;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Verifies that the assignor delegates to {@link BalanceService} using the same greedy placement
+ * Verifies that the assignor delegates to {@link BalanceService} using the same
+ * greedy placement
  * as {@link SortingRoundRobinBalanceService} when weights are supplied.
  */
 class LoadAwarePartitionAssignorTest {
@@ -47,8 +48,7 @@ class LoadAwarePartitionAssignorTest {
         Map<TopicPartition, Double> w = weights.computeWeights(Set.of(
                 new TopicPartition(topic, 0),
                 new TopicPartition(topic, 1),
-                new TopicPartition(topic, 2)
-        ));
+                new TopicPartition(topic, 2)));
         Map<String, List<TopicPartition>> expected = balance.computeOptimalAssignment(subscriptions.keySet(), w);
 
         assertEquals(expected, assignment);

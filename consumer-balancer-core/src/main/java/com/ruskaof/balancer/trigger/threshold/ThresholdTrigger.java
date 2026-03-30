@@ -1,9 +1,9 @@
-package com.ruskaof.listener.trigger.threshold;
+package com.ruskaof.balancer.trigger.threshold;
 
-import com.ruskaof.listener.balance.BalanceService;
-import com.ruskaof.listener.trigger.RebalanceTrigger;
-import com.ruskaof.listener.weight.PartitionWeightDefaults;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.balance.BalanceService;
+import com.ruskaof.balancer.trigger.RebalanceTrigger;
+import com.ruskaof.balancer.weight.PartitionWeightDefaults;
+import com.ruskaof.balancer.weight.WeightService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -35,7 +35,8 @@ public class ThresholdTrigger implements RebalanceTrigger {
 
             for (var memberDescription : groupDescription.members()) {
                 allPartitions.addAll(memberDescription.assignment().topicPartitions());
-                currentAssignment.put(memberDescription.consumerId(), memberDescription.assignment().topicPartitions().stream().toList());
+                currentAssignment.put(memberDescription.consumerId(),
+                        memberDescription.assignment().topicPartitions().stream().toList());
             }
 
             var weights = weightService.computeWeights(allPartitions);
@@ -49,7 +50,8 @@ public class ThresholdTrigger implements RebalanceTrigger {
 
             boolean shouldTrigger = currentMaxLoaded.memberLoad / optimalMaxLoaded.memberLoad > threshold;
 
-            log.info("ThresholdTrigger result: optimalMaxLoaded={}, currentMaxLoaded={}, shouldTrigger={}", optimalMaxLoaded, currentMaxLoaded, shouldTrigger);
+            log.info("ThresholdTrigger result: optimalMaxLoaded={}, currentMaxLoaded={}, shouldTrigger={}",
+                    optimalMaxLoaded, currentMaxLoaded, shouldTrigger);
             return shouldTrigger;
         } catch (Exception e) {
             log.error("Could not run ThresholdTrigger", e);
@@ -59,8 +61,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
 
     private MemberLoad calculateMaxLoadedMember(
             Map<String, List<TopicPartition>> assignment,
-            Map<TopicPartition, Double> weights
-    ) {
+            Map<TopicPartition, Double> weights) {
         MemberLoad maxLoadedMember = null;
 
         for (var member : assignment.keySet()) {
@@ -80,7 +81,6 @@ public class ThresholdTrigger implements RebalanceTrigger {
 
     private record MemberLoad(
             String memberId,
-            double memberLoad
-    ) {
+            double memberLoad) {
     }
 }

@@ -1,6 +1,6 @@
 package com.ruskaof.balancer.autoconfigure;
 
-import com.ruskaof.listener.LoadAwarePartitionAssignor;
+import com.ruskaof.balancer.LoadAwarePartitionAssignor;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;

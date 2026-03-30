@@ -1,7 +1,7 @@
 package com.ruskaof.balancer.autoconfigure;
 
-import com.ruskaof.listener.prometheus.PrometheusClient;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.prometheus.PrometheusClient;
+import com.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;

@@ -1,4 +1,4 @@
-package com.ruskaof.listener.prometheus;
+package com.ruskaof.balancer.prometheus;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -19,8 +19,7 @@ public final class PrometheusConnectionSettings {
             String host,
             int port,
             Duration connectTimeout,
-            Duration requestTimeout
-    ) {
+            Duration requestTimeout) {
         this.scheme = Objects.requireNonNull(scheme, "scheme");
         this.host = Objects.requireNonNull(host, "host");
         this.port = port;
