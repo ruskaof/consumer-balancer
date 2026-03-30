@@ -1,8 +1,8 @@
-package com.ruskaof.balancer;
+package io.github.ruskaof.balancer;
 
-import com.ruskaof.balancer.balance.BalanceService;
-import com.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
-import com.ruskaof.balancer.weight.WeightService;
+import io.github.ruskaof.balancer.balance.BalanceService;
+import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.Subscription;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;

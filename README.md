@@ -18,7 +18,7 @@ Add the starter (publish to Maven Local or your repository as needed):
 
 ```kotlin
 dependencies {
-    implementation("com.ruskaof:consumer-balancer-spring-boot-starter:1.0-SNAPSHOT")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:1.0-SNAPSHOT")
 }
 ```
 
@@ -30,7 +30,7 @@ spring:
     consumer:
       group-id: my-group
       properties:
-        partition.assignment.strategy: com.ruskaof.balancer.LoadAwarePartitionAssignor
+        partition.assignment.strategy: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
 
 consumer-balancer:
   prometheus:
@@ -78,9 +78,9 @@ Assignor keys (merged from `consumer-balancer.prometheus` when not set in YAML):
 
 ## Custom weight store
 
-Implement `com.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present.
+Implement `io.github.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present.
 
-Optionally provide your own `com.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder` (or `TemplatedKafkaRatePromqlBuilder`) for custom PromQL while still using Prometheus.
+Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder` (or `TemplatedKafkaRatePromqlBuilder`) for custom PromQL while still using Prometheus.
 
 ## Operations
 

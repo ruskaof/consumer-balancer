@@ -80,7 +80,7 @@ services:
       PROMETHEUS_HOST: prometheus
       PROMETHEUS_PORT: 9090
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
-      KAFKA_ASSIGNMENT_STRATEGY: com.ruskaof.balancer.LoadAwarePartitionAssignor
+      KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
       KAFKA_CONSUMER_GROUP: listener-balanced
       KAFKA_BALANCER_ENABLED: true
     networks:
