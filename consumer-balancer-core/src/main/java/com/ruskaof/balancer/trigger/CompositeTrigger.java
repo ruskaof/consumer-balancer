@@ -1,10 +1,12 @@
-package com.ruskaof.listener.trigger;
+package com.ruskaof.balancer.trigger;
 
 import java.util.List;
 
 public class CompositeTrigger implements RebalanceTrigger {
 
-    public enum Mode {ALL, ANY}
+    public enum Mode {
+        ALL, ANY
+    }
 
     private final List<RebalanceTrigger> triggers;
     private final Mode mode;

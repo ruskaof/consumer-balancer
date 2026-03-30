@@ -1,7 +1,7 @@
 package com.ruskaof.balancer.autoconfigure;
 
-import com.ruskaof.listener.balance.BalanceService;
-import com.ruskaof.listener.balance.SortingRoundRobinBalanceService;
+import com.ruskaof.balancer.balance.BalanceService;
+import com.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

@@ -1,7 +1,7 @@
 package com.ruskaof.balancer.autoconfigure;
 
-import com.ruskaof.listener.trigger.CoordinatorManager;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.trigger.CoordinatorManager;
+import com.ruskaof.balancer.weight.WeightService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.SpringBootApplication;

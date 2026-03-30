@@ -1,4 +1,4 @@
-package com.ruskaof.listener.prometheus;
+package com.ruskaof.balancer.prometheus;
 
 import java.util.List;
 import java.util.regex.Pattern;

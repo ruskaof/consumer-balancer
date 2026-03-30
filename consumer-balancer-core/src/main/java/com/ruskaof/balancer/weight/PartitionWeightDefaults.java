@@ -1,7 +1,8 @@
-package com.ruskaof.listener.weight;
+package com.ruskaof.balancer.weight;
 
 /**
- * Default weight when a partition is missing from a {@link WeightService} result.
+ * Default weight when a partition is missing from a {@link WeightService}
+ * result.
  */
 public final class PartitionWeightDefaults {
 

@@ -1,4 +1,4 @@
-package com.ruskaof.listener.balance;
+package com.ruskaof.balancer.balance;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.clients.consumer.RoundRobinAssignor;
@@ -12,8 +12,10 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Demonstrates that greedy least-loaded assignment lowers the worst consumer load compared to
- * Kafka's {@link RoundRobinAssignor} when partition weights are skewed (hot partitions).
+ * Demonstrates that greedy least-loaded assignment lowers the worst consumer
+ * load compared to
+ * Kafka's {@link RoundRobinAssignor} when partition weights are skewed (hot
+ * partitions).
  */
 class SortingRoundRobinBalanceServiceTest {
 
@@ -42,15 +44,12 @@ class SortingRoundRobinBalanceServiceTest {
                 () -> String.format(
                         "Greedy max load (%.2f) should be < round-robin max load (%.2f). "
                                 + "Greedy=%s RR=%s weights=%s",
-                        greedyMax, rrMax, greedy, roundRobin, weights
-                )
-        );
+                        greedyMax, rrMax, greedy, roundRobin, weights));
     }
 
     private static double maxMemberLoad(
             Map<String, List<TopicPartition>> assignment,
-            Map<TopicPartition, Double> weights
-    ) {
+            Map<TopicPartition, Double> weights) {
         return assignment.values().stream()
                 .mapToDouble(parts -> parts.stream().mapToDouble(weights::get).sum())
                 .max()
@@ -58,13 +57,13 @@ class SortingRoundRobinBalanceServiceTest {
     }
 
     /**
-     * Same topic subscription for all members; uses Kafka's {@link RoundRobinAssignor} for a fair baseline.
+     * Same topic subscription for all members; uses Kafka's
+     * {@link RoundRobinAssignor} for a fair baseline.
      */
     private static Map<String, List<TopicPartition>> roundRobinAssignment(
             String topic,
             int numPartitions,
-            Set<String> members
-    ) {
+            Set<String> members) {
         Map<String, Integer> partitionsPerTopic = Map.of(topic, numPartitions);
         Map<String, Subscription> subscriptions = new TreeMap<>();
         ByteBuffer userData = ByteBuffer.allocate(0);

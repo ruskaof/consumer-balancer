@@ -1,4 +1,4 @@
-package com.ruskaof.listener.prometheus.model;
+package com.ruskaof.balancer.prometheus.model;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -11,4 +11,3 @@ public class PromqlResponse {
     private String status;
     private PrometheusData data;
 }
-

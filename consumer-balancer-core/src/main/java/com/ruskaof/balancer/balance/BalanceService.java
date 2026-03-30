@@ -1,4 +1,4 @@
-package com.ruskaof.listener.balance;
+package com.ruskaof.balancer.balance;
 
 import org.apache.kafka.common.TopicPartition;
 
@@ -9,6 +9,5 @@ import java.util.Set;
 public interface BalanceService {
     Map<String, List<TopicPartition>> computeOptimalAssignment(
             Set<String> members,
-            Map<TopicPartition, Double> allPartitions
-    );
+            Map<TopicPartition, Double> allPartitions);
 }

@@ -1,7 +1,7 @@
-package com.ruskaof.listener.prometheus;
+package com.ruskaof.balancer.prometheus;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ruskaof.listener.prometheus.model.PromqlResponse;
+import com.ruskaof.balancer.prometheus.model.PromqlResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -51,7 +51,8 @@ public class PrometheusClient {
             String body = response.body() != null && response.body().length > 0
                     ? new String(response.body(), StandardCharsets.UTF_8)
                     : "";
-            throw new IOException("Prometheus query failed: HTTP " + code + " body=" + truncate(body, 512) + " uri=" + uri);
+            throw new IOException(
+                    "Prometheus query failed: HTTP " + code + " body=" + truncate(body, 512) + " uri=" + uri);
         }
 
         return objectMapper.readValue(response.body(), PromqlResponse.class);

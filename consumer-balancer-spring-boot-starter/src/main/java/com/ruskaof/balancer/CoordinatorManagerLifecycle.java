@@ -1,6 +1,6 @@
 package com.ruskaof.balancer;
 
-import com.ruskaof.listener.trigger.CoordinatorManager;
+import com.ruskaof.balancer.trigger.CoordinatorManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.SmartLifecycle;

@@ -1,11 +1,11 @@
 package com.ruskaof.balancer.autoconfigure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ruskaof.listener.prometheus.KafkaRatePromqlBuilder;
-import com.ruskaof.listener.prometheus.PrometheusClient;
-import com.ruskaof.listener.prometheus.PrometheusObjectMappers;
-import com.ruskaof.listener.weight.PrometheusWeightService;
-import com.ruskaof.listener.weight.WeightService;
+import com.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder;
+import com.ruskaof.balancer.prometheus.PrometheusClient;
+import com.ruskaof.balancer.prometheus.PrometheusObjectMappers;
+import com.ruskaof.balancer.weight.PrometheusWeightService;
+import com.ruskaof.balancer.weight.WeightService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;

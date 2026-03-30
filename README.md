@@ -30,7 +30,7 @@ spring:
     consumer:
       group-id: my-group
       properties:
-        partition.assignment.strategy: com.ruskaof.listener.LoadAwarePartitionAssignor
+        partition.assignment.strategy: com.ruskaof.balancer.LoadAwarePartitionAssignor
 
 consumer-balancer:
   prometheus:
@@ -78,9 +78,9 @@ Assignor keys (merged from `consumer-balancer.prometheus` when not set in YAML):
 
 ## Custom weight store
 
-Implement `com.ruskaof.listener.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present.
+Implement `com.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present.
 
-Optionally provide your own `com.ruskaof.listener.prometheus.KafkaRatePromqlBuilder` (or `TemplatedKafkaRatePromqlBuilder`) for custom PromQL while still using Prometheus.
+Optionally provide your own `com.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder` (or `TemplatedKafkaRatePromqlBuilder`) for custom PromQL while still using Prometheus.
 
 ## Operations
 

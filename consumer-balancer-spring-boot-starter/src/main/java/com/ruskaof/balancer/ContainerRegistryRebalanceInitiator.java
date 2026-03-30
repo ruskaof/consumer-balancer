@@ -1,6 +1,6 @@
 package com.ruskaof.balancer;
 
-import com.ruskaof.listener.trigger.CoordinatorManager;
+import com.ruskaof.balancer.trigger.CoordinatorManager;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.listener.MessageListenerContainer;
 

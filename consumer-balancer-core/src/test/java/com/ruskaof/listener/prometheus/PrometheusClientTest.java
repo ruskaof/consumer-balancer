@@ -1,7 +1,7 @@
-package com.ruskaof.listener.prometheus;
+package com.ruskaof.balancer.prometheus;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.ruskaof.listener.prometheus.model.PromqlResponse;
+import com.ruskaof.balancer.prometheus.model.PromqlResponse;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
@@ -38,8 +38,7 @@ class PrometheusClientTest {
                     "127.0.0.1",
                     port,
                     Duration.ofSeconds(5),
-                    Duration.ofSeconds(5)
-            );
+                    Duration.ofSeconds(5));
             PrometheusClient client = new PrometheusClient(settings, new ObjectMapper());
             PromqlResponse r = client.getInstantValue("up");
             assertEquals("success", r.getStatus());
@@ -65,8 +64,7 @@ class PrometheusClientTest {
                     "127.0.0.1",
                     port,
                     Duration.ofSeconds(5),
-                    Duration.ofSeconds(5)
-            );
+                    Duration.ofSeconds(5));
             PrometheusClient client = new PrometheusClient(settings, new ObjectMapper());
             IOException ex = assertThrows(IOException.class, () -> client.getInstantValue("up"));
             assertTrue(ex.getMessage().contains("HTTP 500"));

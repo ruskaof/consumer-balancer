@@ -62,7 +62,7 @@ public class KafkaBalancerProperties {
     public static class Prometheus {
         /**
          * Required when using the default
-         * {@link com.ruskaof.listener.weight.PrometheusWeightService}:
+         * {@link com.ruskaof.balancer.weight.PrometheusWeightService}:
          * PromQL template with placeholder {@code %s} where the topic regex list is
          * inserted.
          * Results must include {@code topic} and {@code partition} labels on each

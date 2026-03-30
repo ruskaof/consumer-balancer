@@ -1,7 +1,7 @@
-package com.ruskaof.listener.weight;
+package com.ruskaof.balancer.weight;
 
-import com.ruskaof.listener.prometheus.KafkaRatePromqlBuilder;
-import com.ruskaof.listener.prometheus.PrometheusClient;
+import com.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder;
+import com.ruskaof.balancer.prometheus.PrometheusClient;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.common.TopicPartition;
 
@@ -9,14 +9,17 @@ import java.io.IOException;
 import java.util.*;
 
 /**
- * Loads per-partition weights from Prometheus. Partitions missing from the query result
- * receive {@link #DEFAULT_MISSING_WEIGHT} so assignment and threshold logic stay well-defined.
+ * Loads per-partition weights from Prometheus. Partitions missing from the
+ * query result
+ * receive {@link #DEFAULT_MISSING_WEIGHT} so assignment and threshold logic
+ * stay well-defined.
  */
 @Slf4j
 public class PrometheusWeightService implements WeightService {
 
     /**
-     * Used when Prometheus returns no series for a topic/partition (no metric yet, scrape gap, etc.).
+     * Used when Prometheus returns no series for a topic/partition (no metric yet,
+     * scrape gap, etc.).
      */
     public static final double DEFAULT_MISSING_WEIGHT = PartitionWeightDefaults.MISSING;
 
@@ -37,7 +40,7 @@ public class PrometheusWeightService implements WeightService {
         List<String> allTopics = allPartitions.stream().map(TopicPartition::topic).distinct().toList();
         String promql = kafkaRatePromqlBuilder.setTopics(allTopics).build();
 
-        final com.ruskaof.listener.prometheus.model.PromqlResponse response;
+        final com.ruskaof.balancer.prometheus.model.PromqlResponse response;
         try {
             response = prometheusClient.getInstantValue(promql);
         } catch (InterruptedException e) {

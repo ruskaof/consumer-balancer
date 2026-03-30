@@ -1,4 +1,4 @@
-package com.ruskaof.listener.trigger;
+package com.ruskaof.balancer.trigger;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -22,7 +22,9 @@ public class CoordinatorManager implements AutoCloseable {
 
     @FunctionalInterface
     public interface RebalanceInitiator {
-        /** Called when trigger condition is met. User implements rebalance logic here. */
+        /**
+         * Called when trigger condition is met. User implements rebalance logic here.
+         */
         void initiateRebalance();
     }
 
@@ -30,8 +32,7 @@ public class CoordinatorManager implements AutoCloseable {
             CoordinatorElection election,
             RebalanceTrigger trigger,
             RebalanceInitiator rebalanceInitiator,
-            long triggerCheckIntervalMs
-    ) {
+            long triggerCheckIntervalMs) {
         this.election = election;
         this.trigger = trigger;
         this.rebalanceInitiator = rebalanceInitiator;
@@ -55,8 +56,7 @@ public class CoordinatorManager implements AutoCloseable {
                     this::evaluateTrigger,
                     0,
                     triggerCheckIntervalMs,
-                    TimeUnit.MILLISECONDS
-            );
+                    TimeUnit.MILLISECONDS);
         } else if (!isCoordinator && monitoring.compareAndSet(true, false)) {
             log.info("Lost coordinator status - stopping trigger monitoring");
             scheduler.shutdownNow();
@@ -65,7 +65,8 @@ public class CoordinatorManager implements AutoCloseable {
 
     private void evaluateTrigger() {
         log.info("Evaluating trigger in Coordinator manager");
-        if (!running.get() || !election.isCoordinator()) return;
+        if (!running.get() || !election.isCoordinator())
+            return;
 
         try {
             if (trigger.shouldTrigger()) {
@@ -83,7 +84,8 @@ public class CoordinatorManager implements AutoCloseable {
     @Override
     public void close() {
         if (running.compareAndSet(true, false)) {
-            if (monitoring.get()) scheduler.shutdownNow();
+            if (monitoring.get())
+                scheduler.shutdownNow();
             election.close();
         }
     }
