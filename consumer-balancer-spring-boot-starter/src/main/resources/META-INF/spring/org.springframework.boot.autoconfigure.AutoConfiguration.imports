@@ -1,0 +1,5 @@
+com.ruskaof.balancer.autoconfigure.KafkaBalancerKafkaPropertiesMergeConfiguration
+com.ruskaof.balancer.autoconfigure.DefaultKafkaRatePromqlBuilderAutoConfiguration
+com.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration
+com.ruskaof.balancer.autoconfigure.PrometheusWeightAutoConfiguration
+com.ruskaof.balancer.autoconfigure.BalancerAutoConfiguration

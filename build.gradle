@@ -1,0 +1,25 @@
+subprojects {
+    repositories {
+        mavenCentral()
+    }
+
+    plugins.withType(JavaPlugin) {
+        java {
+            toolchain {
+                languageVersion = JavaLanguageVersion.of(21)
+            }
+        }
+
+        dependencies {
+            implementation platform('org.springframework.boot:spring-boot-dependencies:3.5.11')
+            compileOnly 'org.projectlombok:lombok:1.18.36'
+            annotationProcessor 'org.projectlombok:lombok:1.18.36'
+            testImplementation platform('org.junit:junit-bom:5.10.0')
+            testImplementation 'org.junit.jupiter:junit-jupiter'
+        }
+
+        test {
+            useJUnitPlatform()
+        }
+    }
+}
