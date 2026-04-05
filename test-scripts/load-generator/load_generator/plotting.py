@@ -24,7 +24,7 @@ def plot_test_results(
         for idx, series in enumerate(all_series):
             timestamps = [timestamp for timestamp, _ in series]
             values = [value for _, value in series]
-            ax.plot(timestamps, values, linewidth=1.5, label=job if idx == 0 else None)
+            ax.plot(timestamps, values, linewidth=1.5, label=f"replica {idx + 1}")
         ax.set_ylabel("Consumed msg/s")
         ax.set_title(f"Throughput for {job}")
 

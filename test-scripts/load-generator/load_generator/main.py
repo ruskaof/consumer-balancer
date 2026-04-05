@@ -78,8 +78,11 @@ def plot_prometheus_cpu_usage():
         "listener-default": prometheus_client.get_record_consumed_rates("listener-default", start_ts, end_ts),
         "listener-balanced": prometheus_client.get_record_consumed_rates("listener-balanced", start_ts, end_ts),
     }
-    rebalance_timestamps = prometheus_client.get_rebalance_timestamps("listener-default", start_ts, end_ts)
-    plot_test_results(GRAPH_OUTPUT_DIR, eps_by_job, rebalance_timestamps)
+    rebalance_timestamps_by_job = {
+        job: prometheus_client.get_rebalance_timestamps(job, start_ts, end_ts)
+        for job in eps_by_job
+    }
+    plot_test_results(GRAPH_OUTPUT_DIR, eps_by_job, rebalance_timestamps_by_job)
 
 
 if __name__ == "__main__":
