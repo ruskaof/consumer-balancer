@@ -5,7 +5,7 @@ from matplotlib import pyplot as plt
 
 def plot_test_results(
     output_dir: str,
-    eps_by_job: dict[str, list[tuple[datetime, float]]],
+    eps_by_job: dict[str, list[list[tuple[datetime, float]]]],
     rebalance_timestamps_by_job: dict[str, list[datetime]]
 ) -> None:
     jobs = list(eps_by_job.keys())
@@ -19,11 +19,12 @@ def plot_test_results(
 
     for i, job in enumerate(jobs):
         ax = axs[i]
-        results = eps_by_job[job]
-        timestamps = [timestamp for timestamp, _ in results]
-        values = [value for _, value in results]
+        all_series = eps_by_job[job]
 
-        ax.plot(timestamps, values, linewidth=1.5, label=job)
+        for idx, series in enumerate(all_series):
+            timestamps = [timestamp for timestamp, _ in series]
+            values = [value for _, value in series]
+            ax.plot(timestamps, values, linewidth=1.5, label=job if idx == 0 else None)
         ax.set_ylabel("Consumed msg/s")
         ax.set_title(f"Throughput for {job}")
 
