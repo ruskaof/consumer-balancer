@@ -3,6 +3,17 @@ import os
 from matplotlib import pyplot as plt
 
 
+def _find_global_start(eps_by_job: dict[str, list[list[tuple[datetime, float]]]]) -> datetime:
+    earliest = None
+    for all_series in eps_by_job.values():
+        for series in all_series:
+            if series:
+                ts = series[0][0]
+                if earliest is None or ts < earliest:
+                    earliest = ts
+    return earliest
+
+
 def plot_test_results(
     output_dir: str,
     eps_by_job: dict[str, list[list[tuple[datetime, float]]]],
@@ -13,6 +24,8 @@ def plot_test_results(
     if jobs_count == 0:
         return
 
+    global_start = _find_global_start(eps_by_job)
+
     fig, axs = plt.subplots(jobs_count, 1, figsize=(12, 4 * jobs_count), sharex=True)
     if jobs_count == 1:
         axs = [axs]
@@ -22,21 +35,24 @@ def plot_test_results(
         all_series = eps_by_job[job]
 
         for idx, series in enumerate(all_series):
-            timestamps = [timestamp for timestamp, _ in series]
+            seconds = [(ts - global_start).total_seconds() for ts, _ in series]
             values = [value for _, value in series]
-            ax.plot(timestamps, values, linewidth=1.5, label=f"replica {idx + 1}")
+            ax.plot(seconds, values, linewidth=1.5, label=f"replica {idx + 1}")
         ax.set_ylabel("Consumed msg/s")
         ax.set_title(f"Throughput for {job}")
 
+        rebalance_added_to_legend = False
         if job in rebalance_timestamps_by_job:
             for timestamp in rebalance_timestamps_by_job[job]:
-                ax.axvline(x=timestamp, color='r', linestyle='--', alpha=0.5)
+                offset = (timestamp - global_start).total_seconds()
+                label = "rebalance" if not rebalance_added_to_legend else None
+                ax.axvline(x=offset, color='r', linestyle='--', alpha=0.5, label=label)
+                rebalance_added_to_legend = True
 
         ax.legend(loc='upper right')
 
-    axs[-1].set_xlabel("Time")
+    axs[-1].set_xlabel("Elapsed time (s)")
     fig.tight_layout()
-
 
     fig.savefig(output_dir)
     print(f"Plot saved to {output_dir}")
