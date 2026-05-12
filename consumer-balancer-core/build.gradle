@@ -10,9 +10,9 @@ java {
 
 dependencies {
     api 'org.apache.kafka:kafka-clients'
-    implementation 'org.springframework:spring-web'
+    implementation 'org.slf4j:slf4j-api'
     implementation 'com.fasterxml.jackson.core:jackson-databind'
-    implementation 'ch.qos.logback:logback-classic'
+    testRuntimeOnly 'ch.qos.logback:logback-classic'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
@@ -20,6 +20,29 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
+            pom {
+                name = 'Consumer Balancer Core'
+                description = 'Load-aware Kafka consumer partition assignment driven by per-partition weights from Prometheus'
+                url = 'https://github.com/ruskaof/consumer-balancer'
+                licenses {
+                    license {
+                        name = 'Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'ruskaof'
+                        name = 'Dmitrii Rusinov'
+                        email = 'ruskaof@gmail.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:git://github.com/ruskaof/consumer-balancer.git'
+                    developerConnection = 'scm:git:ssh://github.com/ruskaof/consumer-balancer.git'
+                    url = 'https://github.com/ruskaof/consumer-balancer'
+                }
+            }
         }
     }
 }

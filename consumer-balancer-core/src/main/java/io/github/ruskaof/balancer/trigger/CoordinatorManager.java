@@ -4,9 +4,9 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 
 @Slf4j
 public class CoordinatorManager implements AutoCloseable {
@@ -19,6 +19,7 @@ public class CoordinatorManager implements AutoCloseable {
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean monitoring = new AtomicBoolean(false);
     private final AtomicBoolean running = new AtomicBoolean(true);
+    private volatile ScheduledFuture<?> triggerFuture;
 
     @FunctionalInterface
     public interface RebalanceInitiator {
@@ -52,14 +53,14 @@ public class CoordinatorManager implements AutoCloseable {
     private void onCoordinatorStatusChange(boolean isCoordinator) {
         if (isCoordinator && monitoring.compareAndSet(false, true)) {
             log.info("Became coordinator - starting trigger monitoring");
-            scheduler.scheduleAtFixedRate(
+            triggerFuture = scheduler.scheduleAtFixedRate(
                     this::evaluateTrigger,
                     0,
                     triggerCheckIntervalMs,
                     TimeUnit.MILLISECONDS);
         } else if (!isCoordinator && monitoring.compareAndSet(true, false)) {
             log.info("Lost coordinator status - stopping trigger monitoring");
-            scheduler.shutdownNow();
+            cancelTriggerFuture();
         }
     }
 
@@ -71,9 +72,8 @@ public class CoordinatorManager implements AutoCloseable {
         try {
             if (trigger.shouldTrigger()) {
                 log.warn("Trigger condition met! Initiating rebalance...");
-
                 monitoring.set(false);
-
+                cancelTriggerFuture();
                 rebalanceInitiator.initiateRebalance();
             }
         } catch (Exception e) {
@@ -81,11 +81,27 @@ public class CoordinatorManager implements AutoCloseable {
         }
     }
 
+    private void cancelTriggerFuture() {
+        ScheduledFuture<?> f = triggerFuture;
+        if (f != null) {
+            f.cancel(true);
+            triggerFuture = null;
+        }
+    }
+
     @Override
     public void close() {
         if (running.compareAndSet(true, false)) {
-            if (monitoring.get())
+            cancelTriggerFuture();
+            scheduler.shutdown();
+            try {
+                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                    scheduler.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 scheduler.shutdownNow();
+            }
             election.close();
         }
     }

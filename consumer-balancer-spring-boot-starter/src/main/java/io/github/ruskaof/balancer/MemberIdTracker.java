@@ -15,14 +15,16 @@ public class MemberIdTracker implements ConsumerAwareRebalanceListener {
     private final Set<String> memberIds = ConcurrentHashMap.newKeySet();
 
     @Override
+    public void onPartitionsRevokedBeforeCommit(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+        memberIds.remove(consumer.groupMetadata().memberId());
+    }
+
+    @Override
     public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
         String memberId = consumer.groupMetadata().memberId();
-        String consumerGroupId = consumer.groupMetadata().groupId();
-
         memberIds.add(memberId);
-
         log.debug("Member ID registered: {} (total tracked: {}, group: {})",
-                memberId, memberIds.size(), consumerGroupId);
+                memberId, memberIds.size(), consumer.groupMetadata().groupId());
     }
 
     public Set<String> getCurrentMemberIds() {
