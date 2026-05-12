@@ -72,8 +72,6 @@ public class CoordinatorManager implements AutoCloseable {
         try {
             if (trigger.shouldTrigger()) {
                 log.warn("Trigger condition met! Initiating rebalance...");
-                monitoring.set(false);
-                cancelTriggerFuture();
                 rebalanceInitiator.initiateRebalance();
             }
         } catch (Exception e) {
