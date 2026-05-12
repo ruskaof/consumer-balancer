@@ -43,3 +43,5 @@ bin/
 /.idea
 
 /test-scripts/load-generator/.venv/
+
+.claude
