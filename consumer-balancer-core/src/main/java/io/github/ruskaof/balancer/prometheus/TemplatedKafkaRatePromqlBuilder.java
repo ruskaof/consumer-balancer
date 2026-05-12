@@ -11,6 +11,10 @@ public class TemplatedKafkaRatePromqlBuilder extends KafkaRatePromqlBuilder {
         if (template == null || template.isBlank()) {
             throw new IllegalArgumentException("PromQL template is required and must not be blank");
         }
+        if (!template.contains("%s")) {
+            throw new IllegalArgumentException(
+                    "PromQL template must contain the %s placeholder for the topic regex list");
+        }
         this.template = template;
     }
 
@@ -19,8 +23,13 @@ public class TemplatedKafkaRatePromqlBuilder extends KafkaRatePromqlBuilder {
         Objects.requireNonNull(topics, "topics");
         StringJoiner topicsListRegex = new StringJoiner("|");
         for (String topic : topics) {
-            topicsListRegex.add(topic);
+            topicsListRegex.add(escapeTopicForRegex(topic));
         }
         return String.format(template, topicsListRegex);
+    }
+
+    private static String escapeTopicForRegex(String topic) {
+        // '.' is the only regex metacharacter valid in Kafka topic names (a-z A-Z 0-9 . _ -)
+        return topic.replace(".", "\\.");
     }
 }

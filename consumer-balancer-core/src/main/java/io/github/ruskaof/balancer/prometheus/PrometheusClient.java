@@ -3,10 +3,10 @@ package io.github.ruskaof.balancer.prometheus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.ruskaof.balancer.prometheus.model.PromqlResponse;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -30,15 +30,7 @@ public class PrometheusClient {
 
     public PromqlResponse getInstantValue(String promql) throws IOException, InterruptedException {
         Objects.requireNonNull(promql, "promql");
-        URI uri = UriComponentsBuilder.newInstance()
-                .scheme(settings.scheme())
-                .host(settings.host())
-                .port(settings.port())
-                .path("/api/v1/query")
-                .queryParam("query", promql)
-                .build()
-                .encode(StandardCharsets.UTF_8)
-                .toUri();
+        URI uri = buildUri(settings, promql);
 
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .GET()
@@ -56,6 +48,18 @@ public class PrometheusClient {
         }
 
         return objectMapper.readValue(response.body(), PromqlResponse.class);
+    }
+
+    private static URI buildUri(PrometheusConnectionSettings settings, String promql) throws IOException {
+        try {
+            // URLEncoder encodes &, =, ? etc. as %26, %3D, %3F, preventing query parameter injection.
+            // URI.create() treats the string as already raw/encoded and will not re-encode.
+            String encodedPromql = URLEncoder.encode(promql, StandardCharsets.UTF_8);
+            return URI.create(settings.scheme() + "://" + settings.host() + ":" + settings.port()
+                    + "/api/v1/query?query=" + encodedPromql);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Failed to build Prometheus URI", e);
+        }
     }
 
     private static String truncate(String s, int max) {

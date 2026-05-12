@@ -15,7 +15,7 @@ public class SortingRoundRobinBalanceService implements BalanceService {
                         Set<String> members,
                         Map<TopicPartition, Double> allPartitions) {
                 if (members == null || members.isEmpty()) {
-                        throw new RuntimeException("No members provided for assignment");
+                        throw new IllegalArgumentException("No members provided for assignment");
                 }
                 if (allPartitions == null || allPartitions.isEmpty()) {
                         return members.stream()
