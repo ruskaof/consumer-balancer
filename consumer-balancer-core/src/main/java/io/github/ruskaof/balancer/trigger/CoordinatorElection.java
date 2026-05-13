@@ -62,6 +62,14 @@ public class CoordinatorElection implements AutoCloseable {
                     .sorted()
                     .toList();
 
+            if (sortedMembers.isEmpty()) {
+                if (isCoordinator.getAndSet(false)) {
+                    log.info("No members in group '{}' - resigned coordinator", groupId);
+                    notifyListeners(false);
+                }
+                return;
+            }
+
             Set<String> currentMemberIds = memberIdsSupplier.get();
 
             boolean newStatus = currentMemberIds.stream()
@@ -134,7 +142,7 @@ public class CoordinatorElection implements AutoCloseable {
         private AdminClient adminClient;
 
         public CoordinatorElection build() {
-            if (groupId.isBlank()) {
+            if (groupId == null || groupId.isBlank()) {
                 throw new IllegalArgumentException("Group id is required");
             }
             if (Objects.isNull(memberIdsSupplier)) {

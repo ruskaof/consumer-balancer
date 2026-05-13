@@ -28,7 +28,7 @@ import java.util.Map;
 class KafkaBalancerKafkaPropertiesMergeConfiguration {
 
         @Bean
-        BeanPostProcessor kafkaBalancerPrometheusConsumerPropertiesMerge(KafkaBalancerProperties balancerProperties) {
+        static BeanPostProcessor kafkaBalancerPrometheusConsumerPropertiesMerge(KafkaBalancerProperties balancerProperties) {
                 return new BeanPostProcessor() {
                         @Override
                         public Object postProcessAfterInitialization(Object bean, String beanName)

@@ -28,6 +28,6 @@ public class MemberIdTracker implements ConsumerAwareRebalanceListener {
     }
 
     public Set<String> getCurrentMemberIds() {
-        return memberIds;
+        return Set.copyOf(memberIds);
     }
 }
