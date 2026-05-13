@@ -96,8 +96,25 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         public static final String PROMETHEUS_WEIGHT_QUERY_TEMPLATE = "assignor.load-aware.prometheus.weight-query-template";
 
         public static PrometheusConnectionSettings connectionSettingsFrom(Map<String, ?> configs) {
-            String host = configs.get(PROMETHEUS_HOST).toString();
-            int port = Integer.parseInt(configs.get(PROMETHEUS_PORT).toString());
+            Object hostObj = configs.get(PROMETHEUS_HOST);
+            if (hostObj == null || hostObj.toString().isBlank()) {
+                throw new IllegalArgumentException(
+                        "Required when using load-aware assignor: assignor.load-aware.prometheus.host");
+            }
+            String host = hostObj.toString();
+
+            Object portObj = configs.get(PROMETHEUS_PORT);
+            if (portObj == null || portObj.toString().isBlank()) {
+                throw new IllegalArgumentException(
+                        "Required when using load-aware assignor: assignor.load-aware.prometheus.port");
+            }
+            int port;
+            try {
+                port = Integer.parseInt(portObj.toString());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "Invalid port value for load-aware assignor: " + portObj, e);
+            }
             String scheme = configs.containsKey(PROMETHEUS_SCHEME)
                     ? configs.get(PROMETHEUS_SCHEME).toString()
                     : "http";
