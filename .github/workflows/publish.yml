@@ -24,6 +24,7 @@ jobs:
         run: ./gradlew test --no-daemon
 
   publish:
+    environment: release
     needs: test
     runs-on: ubuntu-latest
     steps:
