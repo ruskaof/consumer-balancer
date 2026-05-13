@@ -1,12 +1,10 @@
 plugins {
     id 'java-library'
-    id 'maven-publish'
+    id "com.vanniktech.maven.publish" version "0.36.0"
 }
 
-java {
-    withSourcesJar()
-    withJavadocJar()
-}
+version = project.findProperty("version")
+group = project.findProperty("group")
 
 dependencies {
     api 'org.apache.kafka:kafka-clients'
@@ -16,33 +14,31 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-            pom {
-                name = 'Consumer Balancer Core'
-                description = 'Load-aware Kafka consumer partition assignment driven by per-partition weights from Prometheus'
-                url = 'https://github.com/ruskaof/consumer-balancer'
-                licenses {
-                    license {
-                        name = 'Apache License, Version 2.0'
-                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
-                    }
-                }
-                developers {
-                    developer {
-                        id = 'ruskaof'
-                        name = 'Dmitrii Rusinov'
-                        email = 'ruskaof@gmail.com'
-                    }
-                }
-                scm {
-                    connection = 'scm:git:git://github.com/ruskaof/consumer-balancer.git'
-                    developerConnection = 'scm:git:ssh://github.com/ruskaof/consumer-balancer.git'
-                    url = 'https://github.com/ruskaof/consumer-balancer'
-                }
-            }
-        }
+mavenPublishing {
+  coordinates(group, "consumer-balancer-core", version)
+
+  pom {
+    name = "Consumer Balancer Core"
+    description = "A library for balancing Kafka partitions based on load."
+    inceptionYear = "2026"
+    url = "https://github.com/ruskaof/consumer-balancer"
+    licenses {
+      license {
+        name = "The Apache License, Version 2.0"
+        url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        distribution = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      }
     }
+    developers {
+      developer {
+        id = "ruskaof"
+        name = "Dmitrii Rusinov"
+        url = "https://github.com/ruskaof"
+      }
+    }
+    scm {
+      url = "https://github.com/ruskaof/consumer-balancer"
+    }
+  }
 }
+
