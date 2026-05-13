@@ -19,9 +19,11 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
 
       - name: Run tests
-        run: ./gradlew test --no-daemon
+        run: gradle test --no-daemon
 
   publish:
     environment: release
@@ -38,9 +40,11 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
 
       - name: Publish to Maven Central
-        run: ./gradlew publishAndReleaseToMavenCentral --no-daemon
+        run: gradle publishAndReleaseToMavenCentral --no-daemon
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
