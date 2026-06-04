@@ -54,7 +54,7 @@ services:
     networks:
       - backend
 
-  listener-default:
+  listener-roundrobin:
     build: ..
     environment:
       LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
@@ -62,7 +62,26 @@ services:
       PROMETHEUS_PORT: 9090
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
       KAFKA_ASSIGNMENT_STRATEGY: org.apache.kafka.clients.consumer.RoundRobinAssignor
-      KAFKA_CONSUMER_GROUP: listener-default
+      KAFKA_CONSUMER_GROUP: listener-roundrobin
+      KAFKA_BALANCER_ENABLED: false
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  listener-cooperative-sticky:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+      KAFKA_CONSUMER_GROUP: listener-cooperative-sticky
       KAFKA_BALANCER_ENABLED: false
     networks:
       - backend
@@ -103,7 +122,8 @@ services:
     volumes:
       - ../test-out:/test-out
     depends_on:
-      - listener-default
+      - listener-roundrobin
+      - listener-cooperative-sticky
       - listener-balanced
     networks:
       - backend

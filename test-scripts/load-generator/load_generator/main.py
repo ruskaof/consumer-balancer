@@ -75,8 +75,9 @@ def plot_prometheus_cpu_usage():
     start_ts = start_time.timestamp()
 
     eps_by_job = {
-        "listener-default": prometheus_client.get_record_consumed_rates("listener-default", start_ts, end_ts),
+        "listener-roundrobin": prometheus_client.get_record_consumed_rates("listener-roundrobin", start_ts, end_ts),
         "listener-balanced": prometheus_client.get_record_consumed_rates("listener-balanced", start_ts, end_ts),
+        "listener-cooperative-sticky": prometheus_client.get_record_consumed_rates("listener-cooperative-sticky", start_ts, end_ts),
     }
     rebalance_timestamps_by_job = {
         job: prometheus_client.get_rebalance_timestamps(job, start_ts, end_ts)

@@ -6,14 +6,22 @@ scrape_configs:
   - job_name: "kafka"
     static_configs:
       - targets: [ "kafka-exporter:9308" ]
-  - job_name: "listener-default"
+  - job_name: "listener-roundrobin"
     metrics_path: "/actuator/prometheus"
     static_configs:
       - targets:
-        - "docker-listener-default-1:4314"
-        - "docker-listener-default-2:4314"
-        - "docker-listener-default-3:4314"
-        - "docker-listener-default-4:4314"
+        - "docker-listener-roundrobin-1:4314"
+        - "docker-listener-roundrobin-2:4314"
+        - "docker-listener-roundrobin-3:4314"
+        - "docker-listener-roundrobin-4:4314"
+  - job_name: "listener-cooperative-sticky"
+    metrics_path: "/actuator/prometheus"
+    static_configs:
+      - targets:
+        - "docker-listener-cooperative-sticky-1:4314"
+        - "docker-listener-cooperative-sticky-2:4314"
+        - "docker-listener-cooperative-sticky-3:4314"
+        - "docker-listener-cooperative-sticky-4:4314"
   - job_name: "listener-balanced"
     metrics_path: "/actuator/prometheus"
     static_configs:
