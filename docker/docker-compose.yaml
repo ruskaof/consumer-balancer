@@ -58,6 +58,7 @@ services:
     build: ..
     environment:
       LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      LISTENER_PROCESSING_COST_MICROS: ${LISTENER_PROCESSING_COST_MICROS}
       PROMETHEUS_HOST: prometheus
       PROMETHEUS_PORT: 9090
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
@@ -77,6 +78,7 @@ services:
     build: ..
     environment:
       LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      LISTENER_PROCESSING_COST_MICROS: ${LISTENER_PROCESSING_COST_MICROS}
       PROMETHEUS_HOST: prometheus
       PROMETHEUS_PORT: 9090
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
@@ -96,6 +98,7 @@ services:
     build: ..
     environment:
       LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      LISTENER_PROCESSING_COST_MICROS: ${LISTENER_PROCESSING_COST_MICROS}
       PROMETHEUS_HOST: prometheus
       PROMETHEUS_PORT: 9090
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
@@ -116,9 +119,27 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
       TOPIC: test-topic
-      PARTITIONS_COUNT: ${PARTITIONS_COUNT}
       GRAPH_OUTPUT_DIR: /test-out/result-default
       PROMETHEUS_URL: prometheus:9090
+      LIBRARY_VERSION: ${LIBRARY_VERSION}
+      # Topology (must match the listener service replica/concurrency settings,
+      # used to report the operating regime and to size the load).
+      PARTITIONS_COUNT: ${PARTITIONS_COUNT}
+      CONSUMER_REPLICAS: ${CONSUMER_REPLICAS}
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      LISTENER_PROCESSING_COST_MICROS: ${LISTENER_PROCESSING_COST_MICROS}
+      # Load and reproducibility.
+      TARGET_TOTAL_MSGS_PER_SEC: ${TARGET_TOTAL_MSGS_PER_SEC}
+      SEED: ${SEED}
+      # Experiment selection and timing.
+      EXPERIMENT: ${EXPERIMENT}
+      SKEW_EXPONENTS: ${SKEW_EXPONENTS}
+      REPETITIONS: ${REPETITIONS}
+      WARMUP_SECONDS: ${WARMUP_SECONDS}
+      STEADY_SECONDS: ${STEADY_SECONDS}
+      SHIFT_SKEW: ${SHIFT_SKEW}
+      SHIFT_PHASES: ${SHIFT_PHASES}
+      SHIFT_PHASE_SECONDS: ${SHIFT_PHASE_SECONDS}
     volumes:
       - ../test-out:/test-out
     depends_on:

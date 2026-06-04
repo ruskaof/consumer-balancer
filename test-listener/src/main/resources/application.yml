@@ -13,6 +13,12 @@ spring:
 server:
   port: 4314
 
+listener:
+  # Simulated per-message service time. A fixed cost per record turns an
+  # overloaded consumer (one assigned too much partition load) into observable
+  # consumer lag and end-to-end latency. 0 disables it (no-op consume).
+  processing-cost-micros: ${LISTENER_PROCESSING_COST_MICROS:0}
+
 management:
   endpoint:
     prometheus:

@@ -36,15 +36,25 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run docker compose
-        run: docker compose --env-file docker/test-env.properties -f docker/docker-compose.yaml up --abort-on-container-exit
+        # --exit-code-from ties the run's pass/fail to the load-generator (and
+        # implies --abort-on-container-exit), so a listener killed during teardown
+        # cannot fail the job with a spurious non-zero exit code.
+        run: docker compose --env-file docker/test-env.properties -f docker/docker-compose.yaml up --exit-code-from load-generator
 
       - name: Verify result artifacts
-        run: test -f test-out/result-default.png
+        run: |
+          test -f test-out/result-default.png
+          test -f test-out/result-default.shift.png
+          test -f test-out/result-default.metadata.json
 
       - name: Upload artifacts
+        # Always publish whatever was produced, even if the run or the verify
+        # step failed, so the figures and metadata are available for debugging.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: perf-test-report
           path: |
             test-out/result-default.png
+            test-out/result-default.shift.png
             test-out/result-default.metadata.json

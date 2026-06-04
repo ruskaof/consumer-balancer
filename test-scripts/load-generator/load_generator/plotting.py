@@ -1,80 +1,119 @@
+"""Figures for the performance report.
+
+Two figures map onto the library's two value propositions:
+
+* ``{prefix}.png`` — **Experiment A** (assignment quality). Imbalance ratio,
+  p99 end-to-end latency, and peak consumer lag, each as a function of load
+  skew, one line per strategy with 95% confidence bands. The headline result.
+* ``{prefix}.shift.png`` — **Experiment B** (proactive rebalance). Peak consumer
+  lag over time as the hot partitions shift at controlled instants, showing how
+  quickly each strategy recovers balance.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime
-import os
+
 from matplotlib import pyplot as plt
 
+# Stable label/style per job so the two figures are visually consistent.
+JOB_STYLE = {
+    "listener-roundrobin": ("RoundRobin (count-balanced)", "tab:blue", "o"),
+    "listener-cooperative-sticky": ("CooperativeSticky (sticky)", "tab:orange", "s"),
+    "listener-balanced": ("Load-aware (this library)", "tab:green", "^"),
+}
 
-def _find_global_start(eps_by_job: dict[str, list[list[tuple[datetime, float]]]]) -> datetime:
-    earliest = None
-    for all_series in eps_by_job.values():
-        for series in all_series:
-            if series:
-                ts = series[0][0]
-                if earliest is None or ts < earliest:
-                    earliest = ts
-    return earliest
-
-
-def _value_at_mark(seconds: list[float], values: list[float], mark: float) -> tuple[float, float] | None:
-    if not seconds:
-        return None
-    best_i = min(range(len(seconds)), key=lambda i: abs(seconds[i] - mark))
-    return seconds[best_i], values[best_i]
+_SWEEP_PANELS = [
+    ("imbalance", "Load imbalance\n(max / mean consumer load)"),
+    ("p99_latency_ms", "p99 end-to-end\nlatency (ms)"),
+    ("max_lag", "Peak consumer\nlag (records)"),
+]
 
 
-def plot_test_results(
-    output_dir: str,
-    eps_by_job: dict[str, list[list[tuple[datetime, float]]]],
-    rebalance_timestamps_by_job: dict[str, list[datetime]]
-) -> None:
-    jobs = list(eps_by_job.keys())
-    jobs_count = len(jobs)
-    if jobs_count == 0:
-        return
+def _label(job: str) -> str:
+    return JOB_STYLE.get(job, (job, None, None))[0]
 
-    global_start = _find_global_start(eps_by_job)
 
-    fig, axs = plt.subplots(jobs_count, 1, figsize=(12, 4 * jobs_count), sharex=True)
-    if jobs_count == 1:
+def _color(job: str):
+    return JOB_STYLE.get(job, (job, None, None))[1]
+
+
+def _marker(job: str) -> str:
+    return JOB_STYLE.get(job, (job, None, "o"))[2]
+
+
+def plot_skew_sweep(
+    output_prefix: str,
+    skews: list[float],
+    aggregated: dict[str, dict[str, dict[str, list[float]]]],
+) -> str:
+    """Experiment A: metric vs. skew, one line per strategy, with 95% CI bars."""
+    jobs = list(aggregated.keys())
+    fig, axs = plt.subplots(len(_SWEEP_PANELS), 1, figsize=(9, 3.2 * len(_SWEEP_PANELS)), sharex=True)
+    if len(_SWEEP_PANELS) == 1:
         axs = [axs]
 
-    for i, job in enumerate(jobs):
-        ax = axs[i]
-        all_series = eps_by_job[job]
+    for ax, (metric, ylabel) in zip(axs, _SWEEP_PANELS):
+        for job in jobs:
+            means = aggregated[job][metric]["mean"]
+            cis = aggregated[job][metric]["ci95"]
+            yerr = [c if c == c else 0.0 for c in cis]  # NaN CI (n<2) -> no bar
+            ax.errorbar(
+                skews, means, yerr=yerr,
+                label=_label(job), color=_color(job), marker=_marker(job),
+                capsize=3, linewidth=1.6,
+            )
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+        if metric == "imbalance":
+            ax.axhline(y=1.0, color="grey", linestyle=":", alpha=0.7, label="perfect balance")
 
-        for idx, series in enumerate(all_series):
-            seconds = [(ts - global_start).total_seconds() for ts, _ in series]
-            values = [value for _, value in series]
-            line, = ax.plot(seconds, values, linewidth=1.5, label=f"replica {idx + 1}")
-            for mark in (150, 450):
-                point = _value_at_mark(seconds, values, mark)
-                if point is None:
-                    continue
-                x, y = point
-                ax.annotate(
-                    f"{y:.0f}",
-                    xy=(x, y),
-                    xytext=(0, 6),
-                    textcoords="offset points",
-                    ha="center",
-                    fontsize=8,
-                    color=line.get_color(),
-                )
-        ax.set_ylabel("Consumed msg/s")
-        ax.set_title(f"Throughput for {job}")
-
-        rebalance_added_to_legend = False
-        if job in rebalance_timestamps_by_job:
-            for timestamp in rebalance_timestamps_by_job[job]:
-                offset = (timestamp - global_start).total_seconds()
-                label = "rebalance" if not rebalance_added_to_legend else None
-                ax.axvline(x=offset, color='r', linestyle='--', alpha=0.5, label=label)
-                rebalance_added_to_legend = True
-
-        ax.legend(loc='upper right')
-
-    axs[-1].set_xlabel("Elapsed time (s)")
+    axs[0].set_title("Effect of load skew on consumer-group balance")
+    axs[0].legend(loc="upper left", fontsize=8)
+    axs[-1].set_xlabel("Load skew (Zipf exponent s) — 0 = uniform, higher = more skewed")
     fig.tight_layout()
 
-    fig.savefig(output_dir)
-    print(f"Plot saved to {output_dir}")
+    path = f"{output_prefix}.png"
+    fig.savefig(path, dpi=120)
     plt.close(fig)
+    print(f"Skew-sweep figure saved to {path}")
+    return path
+
+
+def plot_load_shift(
+    output_prefix: str,
+    start: datetime,
+    lag_series_by_job: dict[str, list[tuple[datetime, float]]],
+    phase_boundaries_seconds: list[float],
+    rebalance_timestamps_by_job: dict[str, list[datetime]],
+) -> str:
+    """Experiment B: peak consumer lag over time, with load-shift markers."""
+    fig, ax = plt.subplots(figsize=(11, 5))
+
+    for job, series in lag_series_by_job.items():
+        if not series:
+            continue
+        seconds = [(ts - start).total_seconds() for ts, _ in series]
+        values = [v for _, v in series]
+        ax.plot(seconds, values, label=_label(job), color=_color(job), linewidth=1.8)
+        for ts in rebalance_timestamps_by_job.get(job, []):
+            ax.axvline(x=(ts - start).total_seconds(), color=_color(job), linestyle=":", alpha=0.25)
+
+    shift_labeled = False
+    for boundary in phase_boundaries_seconds:
+        label = "load shift" if not shift_labeled else None
+        ax.axvline(x=boundary, color="red", linestyle="--", alpha=0.6, label=label)
+        shift_labeled = True
+
+    ax.set_xlabel("Elapsed time (s)")
+    ax.set_ylabel("Peak consumer lag (records)")
+    ax.set_title("Recovery after controlled load shifts (lower and faster is better)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", fontsize=8)
+    fig.tight_layout()
+
+    path = f"{output_prefix}.shift.png"
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"Load-shift figure saved to {path}")
+    return path

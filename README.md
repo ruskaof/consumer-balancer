@@ -95,16 +95,86 @@ This repository is built with **Gradle on the PATH** (not the wrapper), for exam
 gradle test
 ```
 
-## Performance test (Docker)
+## Performance evaluation (Docker)
 
-End-to-end run compares **RoundRobin** vs **load-aware** consumers with skewed synthetic load. It writes:
+The performance harness is designed to be defensible for a scientific write-up:
+every parameter is justified, the run is reproducible from a seed, and the
+metrics measured are the ones the library actually optimises.
 
-- `test-out/result-default.png` — throughput rebalance spikes when Micrometer exposes `kafka_consumer_*rebalance*` counters.
+### Hypothesis
 
+> Load-aware assignment lowers the most-loaded consumer's load — and the lag and
+> latency that follow from it — relative to count-based assignors **when, and
+> only when, the per-partition load is skewed**.
+
+Three consumer groups consume the same topic simultaneously (so they see
+identical input): `RoundRobin` (count-balanced baseline), `CooperativeSticky`
+(sticky baseline), and `LoadAwarePartitionAssignor` (the treatment).
+
+### Workload model: why these parameters
+
+Per-partition load is modelled as a **Zipf distribution** with exponent `s` —
+the standard model for skewed key/partition popularity. A single knob spans the
+whole regime: `s = 0` is uniform (the control, where the library must not hurt),
+larger `s` is more skewed. Zipf weights are mapped to partition ids through a
+**seeded random permutation**, so count-based assignors are measured over the
+*expected* placement of hot partitions rather than one lucky/unlucky layout;
+repetitions with different seeds give 95% confidence intervals.
+
+The benefit depends on the **operating regime**, which the harness prints at
+startup and records in the metadata:
+
+```
+thread capacity   = 1e6 / LISTENER_PROCESSING_COST_MICROS   (msg/s per consumer thread)
+aggregate capacity= thread capacity × CONSUMER_REPLICAS × LISTENER_CONCURRENCY
+mean utilisation  = TARGET_TOTAL_MSGS_PER_SEC / aggregate capacity
+```
+
+A consumer accrues lag once its assigned load exceeds its thread capacity. The
+test listener simulates a fixed per-message service time (`LockSupport.parkNanos`,
+configured by `LISTENER_PROCESSING_COST_MICROS`) precisely so that an overloaded
+consumer falls behind — without this, an idle no-op consumer can never reveal a
+difference between strategies. Choose `TARGET_TOTAL_MSGS_PER_SEC` and the service
+time so that mean utilisation is moderate (~0.3–0.6): low enough that load-aware
+keeps every consumer below capacity, high enough that the consumer holding the
+hot partitions under a count-based assignor crosses it.
+
+### Metrics
+
+| Metric | What it shows | Source |
+|--------|---------------|--------|
+| **Imbalance ratio** = max / mean consumer load | Assignment quality, noise-free (computed from the live assignment + offered rates). This is exactly what `ThresholdTrigger` optimises. `1.0` is perfect balance. | per-partition `records-lag` labels + offered rates |
+| **p99 end-to-end latency** | Production-user impact: the producer embeds its send time, the consumer records `now − sent` into a percentile-histogram timer. | `e2e_latency_seconds_bucket` via `histogram_quantile` |
+| **Peak consumer lag** | Backlog on the most-loaded consumer. | `kafka_consumer_fetch_manager_records_lag_max` |
+| **Rebalance count** | The *cost* side of the comparison (load-aware buys balance by triggering rebalances). | `kafka_consumer_coordinator_rebalance_total` |
+
+### Experiments and outputs
+
+- **Experiment A — static skew sweep.** Holds a fixed skewed load and sweeps
+  `SKEW_EXPONENTS`, measuring steady-state metrics per strategy.
+  → `test-out/result-default.png`: imbalance, p99 latency and peak lag vs. skew,
+  one line per strategy with 95% CI bands.
+- **Experiment B — controlled load shift.** Reshuffles the hot partitions at
+  known instants and measures recovery (area under the lag curve per phase),
+  exercising the proactive-rebalance trigger.
+  → `test-out/result-default.shift.png`: peak lag over time with shift markers.
+- `test-out/result-default.metadata.json`: seed, all parameters, the derived
+  regime, and the aggregated metrics (mean ± 95% CI) plus raw per-repetition
+  records — cite this in the paper and regenerate tables/figures from it.
+
+### Running
 
 ```bash
+# CI / demo profile (short windows, single repetition):
 docker compose --env-file docker/test-env.properties -f docker/docker-compose.yaml up --abort-on-container-exit
 ```
+
+**Paper profile.** For publishable numbers, increase the statistical and
+temporal budget (these are the code defaults in `load_generator/config.py`):
+`SKEW_EXPONENTS=0.0,0.5,1.0,1.5`, `REPETITIONS=5` (or more), `WARMUP_SECONDS=60`,
+`STEADY_SECONDS=60`. Warmup must exceed the coordinator
+`trigger-check-interval` (default 30s) so the proactive rebalance has time to
+act. Override any value in `docker/test-env.properties`.
 
 ## License
 
