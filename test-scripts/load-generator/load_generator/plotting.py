@@ -14,6 +14,13 @@ def _find_global_start(eps_by_job: dict[str, list[list[tuple[datetime, float]]]]
     return earliest
 
 
+def _value_at_mark(seconds: list[float], values: list[float], mark: float) -> tuple[float, float] | None:
+    if not seconds:
+        return None
+    best_i = min(range(len(seconds)), key=lambda i: abs(seconds[i] - mark))
+    return seconds[best_i], values[best_i]
+
+
 def plot_test_results(
     output_dir: str,
     eps_by_job: dict[str, list[list[tuple[datetime, float]]]],
@@ -37,7 +44,21 @@ def plot_test_results(
         for idx, series in enumerate(all_series):
             seconds = [(ts - global_start).total_seconds() for ts, _ in series]
             values = [value for _, value in series]
-            ax.plot(seconds, values, linewidth=1.5, label=f"replica {idx + 1}")
+            line, = ax.plot(seconds, values, linewidth=1.5, label=f"replica {idx + 1}")
+            for mark in (150, 450):
+                point = _value_at_mark(seconds, values, mark)
+                if point is None:
+                    continue
+                x, y = point
+                ax.annotate(
+                    f"{y:.0f}",
+                    xy=(x, y),
+                    xytext=(0, 6),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=8,
+                    color=line.get_color(),
+                )
         ax.set_ylabel("Consumed msg/s")
         ax.set_title(f"Throughput for {job}")
 
