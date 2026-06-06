@@ -20,5 +20,9 @@ public enum TriggerType {
     /**
      * Fires on the coefficient of variation of per-member weighted load.
      */
-    LOAD_VARIANCE
+    LOAD_VARIANCE,
+    /**
+     * Fires on a fixed time interval, regardless of load.
+     */
+    PERIODIC
 }

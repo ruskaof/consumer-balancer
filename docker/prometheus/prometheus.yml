@@ -38,3 +38,11 @@ scrape_configs:
           - "docker-listener-load-variance-2:4314"
           - "docker-listener-load-variance-3:4314"
           - "docker-listener-load-variance-4:4314"
+  - job_name: "listener-periodic"
+    metrics_path: "/actuator/prometheus"
+    static_configs:
+      - targets:
+          - "docker-listener-periodic-1:4314"
+          - "docker-listener-periodic-2:4314"
+          - "docker-listener-periodic-3:4314"
+          - "docker-listener-periodic-4:4314"

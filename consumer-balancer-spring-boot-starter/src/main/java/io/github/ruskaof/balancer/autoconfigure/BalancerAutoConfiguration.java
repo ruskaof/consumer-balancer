@@ -6,6 +6,7 @@ import io.github.ruskaof.balancer.MemberIdTracker;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.trigger.CoordinatorElection;
 import io.github.ruskaof.balancer.trigger.CoordinatorManager;
+import io.github.ruskaof.balancer.trigger.PeriodicTrigger;
 import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
 import io.github.ruskaof.balancer.trigger.lag.ConsumerLagTrigger;
 import io.github.ruskaof.balancer.trigger.membership.MembershipChangeTrigger;
@@ -86,6 +87,8 @@ public class BalancerAutoConfiguration {
                         groupId,
                         weightService,
                         kafkaBalancerProperties.getLoadVarianceThreshold());
+                case PERIODIC -> new PeriodicTrigger(
+                        kafkaBalancerProperties.getPeriodicTriggerInterval().toMillis());
             };
         }
 

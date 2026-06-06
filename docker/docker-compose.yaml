@@ -138,6 +138,27 @@ services:
       kafka:
         condition: service_healthy
 
+  listener-periodic:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
+      KAFKA_CONSUMER_GROUP: listener-periodic
+      KAFKA_BALANCER_ENABLED: true
+      KAFKA_TRIGGER_TYPE: PERIODIC
+      KAFKA_PERIODIC_INTERVAL: 1m
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
   load-generator:
     build: ../test-scripts/load-generator
     environment:
@@ -153,6 +174,7 @@ services:
       - listener-membership-change
       - listener-consumer-lag
       - listener-load-variance
+      - listener-periodic
     networks:
       - backend
 

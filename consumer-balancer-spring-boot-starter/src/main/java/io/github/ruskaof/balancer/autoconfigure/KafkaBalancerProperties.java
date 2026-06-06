@@ -50,6 +50,12 @@ public class KafkaBalancerProperties {
      */
     private double loadVarianceThreshold = 0.3d;
 
+    /**
+     * {@link TriggerType#PERIODIC}: rebalance on this fixed interval regardless
+     * of load.
+     */
+    private Duration periodicTriggerInterval = Duration.ofMinutes(1);
+
     public boolean isEnabled() {
         return enabled;
     }
@@ -112,6 +118,14 @@ public class KafkaBalancerProperties {
 
     public void setLoadVarianceThreshold(double loadVarianceThreshold) {
         this.loadVarianceThreshold = loadVarianceThreshold;
+    }
+
+    public Duration getPeriodicTriggerInterval() {
+        return periodicTriggerInterval;
+    }
+
+    public void setPeriodicTriggerInterval(Duration periodicTriggerInterval) {
+        this.periodicTriggerInterval = periodicTriggerInterval;
     }
 
     public static class Prometheus {

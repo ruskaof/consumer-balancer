@@ -81,6 +81,7 @@ def plot_prometheus_cpu_usage():
         "listener-membership-change",
         "listener-consumer-lag",
         "listener-load-variance",
+        "listener-periodic",
     ]
     eps_by_job = {
         job: prometheus_client.get_record_consumed_rates(job, start_ts, end_ts)

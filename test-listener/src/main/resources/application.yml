@@ -27,6 +27,7 @@ management:
 consumer-balancer:
   enabled: ${KAFKA_BALANCER_ENABLED:true}
   trigger-type: ${KAFKA_TRIGGER_TYPE:THRESHOLD}
+  periodic-trigger-interval: ${KAFKA_PERIODIC_INTERVAL:1m}
   prometheus:
     weight-query-template: 'sum(rate(kafka_topic_partition_current_offset{topic=~"%s"}[1m])) by (topic, partition)'
     host: ${PROMETHEUS_HOST:localhost}
