@@ -54,45 +54,11 @@ services:
     networks:
       - backend
 
-  listener-roundrobin:
-    build: ..
-    environment:
-      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
-      PROMETHEUS_HOST: prometheus
-      PROMETHEUS_PORT: 9090
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
-      KAFKA_ASSIGNMENT_STRATEGY: org.apache.kafka.clients.consumer.RoundRobinAssignor
-      KAFKA_CONSUMER_GROUP: listener-roundrobin
-      KAFKA_BALANCER_ENABLED: false
-    networks:
-      - backend
-    deploy:
-      mode: replicated
-      replicas: 4
-    depends_on:
-      kafka:
-        condition: service_healthy
+  # All listener groups below run the custom LoadAwarePartitionAssignor with the
+  # proactive balancer enabled. They differ only in which RebalanceTrigger drives
+  # proactive rebalances, so the perftest compares triggers rather than assignors.
 
-  listener-cooperative-sticky:
-    build: ..
-    environment:
-      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
-      PROMETHEUS_HOST: prometheus
-      PROMETHEUS_PORT: 9090
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
-      KAFKA_ASSIGNMENT_STRATEGY: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
-      KAFKA_CONSUMER_GROUP: listener-cooperative-sticky
-      KAFKA_BALANCER_ENABLED: false
-    networks:
-      - backend
-    deploy:
-      mode: replicated
-      replicas: 4
-    depends_on:
-      kafka:
-        condition: service_healthy
-
-  listener-balanced:
+  listener-threshold:
     build: ..
     environment:
       LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
@@ -100,8 +66,69 @@ services:
       PROMETHEUS_PORT: 9090
       KAFKA_BOOTSTRAP_SERVERS: kafka:9091
       KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
-      KAFKA_CONSUMER_GROUP: listener-balanced
+      KAFKA_CONSUMER_GROUP: listener-threshold
       KAFKA_BALANCER_ENABLED: true
+      KAFKA_TRIGGER_TYPE: THRESHOLD
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  listener-membership-change:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
+      KAFKA_CONSUMER_GROUP: listener-membership-change
+      KAFKA_BALANCER_ENABLED: true
+      KAFKA_TRIGGER_TYPE: MEMBERSHIP_CHANGE
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  listener-consumer-lag:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
+      KAFKA_CONSUMER_GROUP: listener-consumer-lag
+      KAFKA_BALANCER_ENABLED: true
+      KAFKA_TRIGGER_TYPE: CONSUMER_LAG
+    networks:
+      - backend
+    deploy:
+      mode: replicated
+      replicas: 4
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  listener-load-variance:
+    build: ..
+    environment:
+      LISTENER_CONCURRENCY: ${LISTENER_CONCURRENCY}
+      PROMETHEUS_HOST: prometheus
+      PROMETHEUS_PORT: 9090
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9091
+      KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
+      KAFKA_CONSUMER_GROUP: listener-load-variance
+      KAFKA_BALANCER_ENABLED: true
+      KAFKA_TRIGGER_TYPE: LOAD_VARIANCE
     networks:
       - backend
     deploy:
@@ -122,9 +149,10 @@ services:
     volumes:
       - ../test-out:/test-out
     depends_on:
-      - listener-roundrobin
-      - listener-cooperative-sticky
-      - listener-balanced
+      - listener-threshold
+      - listener-membership-change
+      - listener-consumer-lag
+      - listener-load-variance
     networks:
       - backend
 

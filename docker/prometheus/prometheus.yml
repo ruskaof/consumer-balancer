@@ -6,27 +6,35 @@ scrape_configs:
   - job_name: "kafka"
     static_configs:
       - targets: [ "kafka-exporter:9308" ]
-  - job_name: "listener-roundrobin"
+  - job_name: "listener-threshold"
     metrics_path: "/actuator/prometheus"
     static_configs:
       - targets:
-        - "docker-listener-roundrobin-1:4314"
-        - "docker-listener-roundrobin-2:4314"
-        - "docker-listener-roundrobin-3:4314"
-        - "docker-listener-roundrobin-4:4314"
-  - job_name: "listener-cooperative-sticky"
+        - "docker-listener-threshold-1:4314"
+        - "docker-listener-threshold-2:4314"
+        - "docker-listener-threshold-3:4314"
+        - "docker-listener-threshold-4:4314"
+  - job_name: "listener-membership-change"
     metrics_path: "/actuator/prometheus"
     static_configs:
       - targets:
-        - "docker-listener-cooperative-sticky-1:4314"
-        - "docker-listener-cooperative-sticky-2:4314"
-        - "docker-listener-cooperative-sticky-3:4314"
-        - "docker-listener-cooperative-sticky-4:4314"
-  - job_name: "listener-balanced"
+        - "docker-listener-membership-change-1:4314"
+        - "docker-listener-membership-change-2:4314"
+        - "docker-listener-membership-change-3:4314"
+        - "docker-listener-membership-change-4:4314"
+  - job_name: "listener-consumer-lag"
     metrics_path: "/actuator/prometheus"
     static_configs:
       - targets:
-          - "docker-listener-balanced-1:4314"
-          - "docker-listener-balanced-2:4314"
-          - "docker-listener-balanced-3:4314"
-          - "docker-listener-balanced-4:4314"
+        - "docker-listener-consumer-lag-1:4314"
+        - "docker-listener-consumer-lag-2:4314"
+        - "docker-listener-consumer-lag-3:4314"
+        - "docker-listener-consumer-lag-4:4314"
+  - job_name: "listener-load-variance"
+    metrics_path: "/actuator/prometheus"
+    static_configs:
+      - targets:
+          - "docker-listener-load-variance-1:4314"
+          - "docker-listener-load-variance-2:4314"
+          - "docker-listener-load-variance-3:4314"
+          - "docker-listener-load-variance-4:4314"

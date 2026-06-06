@@ -7,7 +7,10 @@ import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.trigger.CoordinatorElection;
 import io.github.ruskaof.balancer.trigger.CoordinatorManager;
 import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
+import io.github.ruskaof.balancer.trigger.lag.ConsumerLagTrigger;
+import io.github.ruskaof.balancer.trigger.membership.MembershipChangeTrigger;
 import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
+import io.github.ruskaof.balancer.trigger.variance.LoadVarianceTrigger;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -62,12 +65,28 @@ public class BalancerAutoConfiguration {
                 WeightService weightService,
                 BalanceService balanceService,
                 KafkaBalancerProperties kafkaBalancerProperties) {
-            return new ThresholdTrigger(
-                    kafkaBalancerAdminClient,
-                    kafkaProperties.getConsumer().getGroupId(),
-                    weightService,
-                    kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
-                    balanceService);
+            String groupId = kafkaProperties.getConsumer().getGroupId();
+            return switch (kafkaBalancerProperties.getTriggerType()) {
+                case THRESHOLD -> new ThresholdTrigger(
+                        kafkaBalancerAdminClient,
+                        groupId,
+                        weightService,
+                        kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
+                        balanceService);
+                case MEMBERSHIP_CHANGE -> new MembershipChangeTrigger(
+                        kafkaBalancerAdminClient,
+                        groupId);
+                case CONSUMER_LAG -> new ConsumerLagTrigger(
+                        kafkaBalancerAdminClient,
+                        groupId,
+                        kafkaBalancerProperties.getLagImbalanceThreshold(),
+                        kafkaBalancerProperties.getMinTotalLag());
+                case LOAD_VARIANCE -> new LoadVarianceTrigger(
+                        kafkaBalancerAdminClient,
+                        groupId,
+                        weightService,
+                        kafkaBalancerProperties.getLoadVarianceThreshold());
+            };
         }
 
         @Bean

@@ -74,10 +74,17 @@ def plot_prometheus_cpu_usage():
     end_ts = end_time.timestamp()
     start_ts = start_time.timestamp()
 
+    # All groups run the custom LoadAwarePartitionAssignor; they differ only in
+    # which RebalanceTrigger drives proactive rebalances.
+    job_names = [
+        "listener-threshold",
+        "listener-membership-change",
+        "listener-consumer-lag",
+        "listener-load-variance",
+    ]
     eps_by_job = {
-        "listener-roundrobin": prometheus_client.get_record_consumed_rates("listener-roundrobin", start_ts, end_ts),
-        "listener-balanced": prometheus_client.get_record_consumed_rates("listener-balanced", start_ts, end_ts),
-        "listener-cooperative-sticky": prometheus_client.get_record_consumed_rates("listener-cooperative-sticky", start_ts, end_ts),
+        job: prometheus_client.get_record_consumed_rates(job, start_ts, end_ts)
+        for job in job_names
     }
     rebalance_timestamps_by_job = {
         job: prometheus_client.get_rebalance_timestamps(job, start_ts, end_ts)

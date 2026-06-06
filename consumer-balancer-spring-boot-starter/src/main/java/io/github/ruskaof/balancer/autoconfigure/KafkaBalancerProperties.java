@@ -22,10 +22,33 @@ public class KafkaBalancerProperties {
     private final Coordinator coordinator = new Coordinator();
 
     /**
-     * Fire proactive rebalance when (max member load / optimal max load) exceeds
-     * this value.
+     * Which rebalance trigger the auto-configuration wires in.
+     */
+    private TriggerType triggerType = TriggerType.THRESHOLD;
+
+    /**
+     * {@link TriggerType#THRESHOLD}: fire proactive rebalance when
+     * (max member load / optimal max load) exceeds this value.
      */
     private double rebalanceLoadImbalanceThreshold = 1.1d;
+
+    /**
+     * {@link TriggerType#CONSUMER_LAG}: fire when the most-behind member's lag
+     * exceeds this multiple of the average member lag.
+     */
+    private double lagImbalanceThreshold = 2.0d;
+
+    /**
+     * {@link TriggerType#CONSUMER_LAG}: minimum total group lag before the lag
+     * trigger is allowed to fire, so tiny absolute lags are ignored.
+     */
+    private long minTotalLag = 100L;
+
+    /**
+     * {@link TriggerType#LOAD_VARIANCE}: fire when the coefficient of variation
+     * (std dev / mean) of per-member load exceeds this value.
+     */
+    private double loadVarianceThreshold = 0.3d;
 
     public boolean isEnabled() {
         return enabled;
@@ -57,6 +80,38 @@ public class KafkaBalancerProperties {
 
     public void setRebalanceLoadImbalanceThreshold(double rebalanceLoadImbalanceThreshold) {
         this.rebalanceLoadImbalanceThreshold = rebalanceLoadImbalanceThreshold;
+    }
+
+    public TriggerType getTriggerType() {
+        return triggerType;
+    }
+
+    public void setTriggerType(TriggerType triggerType) {
+        this.triggerType = triggerType;
+    }
+
+    public double getLagImbalanceThreshold() {
+        return lagImbalanceThreshold;
+    }
+
+    public void setLagImbalanceThreshold(double lagImbalanceThreshold) {
+        this.lagImbalanceThreshold = lagImbalanceThreshold;
+    }
+
+    public long getMinTotalLag() {
+        return minTotalLag;
+    }
+
+    public void setMinTotalLag(long minTotalLag) {
+        this.minTotalLag = minTotalLag;
+    }
+
+    public double getLoadVarianceThreshold() {
+        return loadVarianceThreshold;
+    }
+
+    public void setLoadVarianceThreshold(double loadVarianceThreshold) {
+        this.loadVarianceThreshold = loadVarianceThreshold;
     }
 
     public static class Prometheus {
