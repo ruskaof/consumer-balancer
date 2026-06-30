@@ -1,6 +1,5 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.prometheus.PrometheusObjectMappers;
@@ -12,6 +11,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 @AutoConfiguration(after = {
         DefaultKafkaRatePromqlBuilderAutoConfiguration.class
@@ -24,7 +25,7 @@ public class PrometheusWeightAutoConfiguration {
     @Bean
     public PrometheusClient prometheusClient(
             KafkaBalancerProperties kafkaBalancerProperties,
-            ObjectProvider<ObjectMapper> objectMapperProvider) {
+            ObjectProvider<JsonMapper> objectMapperProvider) {
         ObjectMapper mapper = objectMapperProvider.getIfAvailable();
         if (mapper == null) {
             mapper = PrometheusObjectMappers.create();

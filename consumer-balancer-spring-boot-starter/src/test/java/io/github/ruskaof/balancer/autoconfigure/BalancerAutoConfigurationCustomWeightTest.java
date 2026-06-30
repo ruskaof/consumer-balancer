@@ -6,7 +6,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration;
+import org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -35,8 +35,8 @@ class BalancerAutoConfigurationCustomWeightTest {
     static class App {
 
         @Bean
-        org.springframework.boot.autoconfigure.kafka.KafkaProperties kafkaProperties() {
-            org.springframework.boot.autoconfigure.kafka.KafkaProperties p = new org.springframework.boot.autoconfigure.kafka.KafkaProperties();
+        org.springframework.boot.kafka.autoconfigure.KafkaProperties kafkaProperties() {
+            org.springframework.boot.kafka.autoconfigure.KafkaProperties p = new org.springframework.boot.kafka.autoconfigure.KafkaProperties();
             p.setBootstrapServers(List.of("127.0.0.1:9092"));
             p.getConsumer().setGroupId("test-group");
             return p;

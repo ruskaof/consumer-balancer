@@ -1,6 +1,6 @@
 package io.github.ruskaof.balancer.prometheus;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import io.github.ruskaof.balancer.prometheus.model.PromqlResponse;
 import lombok.extern.slf4j.Slf4j;
 
