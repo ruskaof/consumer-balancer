@@ -1,13 +1,15 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.5.11'
+    id 'org.springframework.boot' version '4.0.7'
 }
 
 dependencies {
+    // Perf-test harness consumes the local starter so it exercises the code in this repo.
+    // (Published consumers use: io.github.ruskaof:consumer-balancer-spring-boot-starter)
     implementation project(':consumer-balancer-spring-boot-starter')
-    implementation project(':consumer-balancer-core')
-    implementation 'org.springframework.boot:spring-boot-starter-web'
-    implementation 'org.springframework.kafka:spring-kafka'
+
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    implementation 'org.springframework.boot:spring-boot-starter-kafka'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'io.micrometer:micrometer-registry-prometheus'
 }

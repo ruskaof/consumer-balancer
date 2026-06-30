@@ -12,13 +12,28 @@ Built-in Kafka assignors such as `RangeAssignor` and `RoundRobinAssignor` balanc
 | `consumer-balancer-spring-boot-starter` | Spring Boot auto-configuration |
 | `test-listener` | Example Spring Boot app |
 
+## Requirements
+
+- Spring Boot **4.0+** (Spring Framework 7, Spring for Apache Kafka 4.0, Apache Kafka clients 4.1+)
+- Java **17+**
+
+> For Spring Boot 3.x, use the `1.0.0` release of this library.
+
 ## Quickstart (Gradle)
 
-Add the starter (publish to Maven Local or your repository as needed):
+Both modules are published to [Maven Central](https://central.sonatype.com/artifact/io.github.ruskaof/consumer-balancer-spring-boot-starter). Most users only need the starter, which pulls in `consumer-balancer-core` transitively:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:1.0-SNAPSHOT")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:2.0.0")
+}
+```
+
+Using the assignor without Spring Boot? Depend on the core module directly:
+
+```kotlin
+dependencies {
+    implementation("io.github.ruskaof:consumer-balancer-core:2.0.0")
 }
 ```
 
@@ -86,6 +101,7 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 
 - Your PromQL must return series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
+- `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed.
 
 ## Build
 
