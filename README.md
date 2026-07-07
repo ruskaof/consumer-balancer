@@ -62,6 +62,16 @@ consumer-balancer:
 
 Placeholder `%s` is replaced with a `|`‑separated, regex‑escaped list of subscribed topic names for the instant query.
 
+The weight store works with any backend that serves the Prometheus query API. For VictoriaMetrics, set `consumer-balancer.prometheus.path-prefix` to `/prometheus` (single-node) or `/select/<accountID>/prometheus` (cluster vmselect):
+
+```yaml
+consumer-balancer:
+  prometheus:
+    host: vmselect
+    port: 8481
+    path-prefix: /select/0/prometheus
+```
+
 The starter injects the application context's `WeightService`, `BalanceService` and (when proactive rebalance is enabled) `MemberIdTracker` beans into Spring Boot's auto-configured consumer factory under the `assignor.load-aware.*` keys, so the assignor uses exactly the same collaborators as the rebalance trigger. Values set explicitly under `spring.kafka.consumer.properties.assignor.load-aware.*` win over the injected beans.
 
 If you define your own `ConsumerFactory` bean, Boot's factory customizers do not run for it — set the `assignor.load-aware.*` keys on your factory yourself (the `BalancerConsumerFactoryCustomizer` bean can be applied manually).
@@ -77,6 +87,7 @@ If you define your own `ConsumerFactory` bean, Boot's factory customizers do not
 | `consumer-balancer.prometheus.scheme` | `http` | Prometheus URL scheme. |
 | `consumer-balancer.prometheus.host` | `localhost` | Prometheus host. |
 | `consumer-balancer.prometheus.port` | `9090` | Prometheus port. |
+| `consumer-balancer.prometheus.path-prefix` | *(empty)* | Path prefix prepended to `/api/v1/query` for Prometheus-API-compatible backends, e.g. `/prometheus` (single-node VictoriaMetrics) or `/select/<accountID>/prometheus` (VictoriaMetrics cluster). |
 | `consumer-balancer.prometheus.connect-timeout` | `10s` | HTTP connect timeout. |
 | `consumer-balancer.prometheus.request-timeout` | `30s` | HTTP request timeout (per query). |
 | `consumer-balancer.coordinator.election-interval` | `30s` | How often coordinator election runs. |
@@ -96,6 +107,7 @@ Prometheus keys, required **only** when `assignor.load-aware.weight-service` is 
 - `assignor.load-aware.prometheus.host`
 - `assignor.load-aware.prometheus.port`
 - `assignor.load-aware.prometheus.scheme`
+- `assignor.load-aware.prometheus.path-prefix`
 - `assignor.load-aware.prometheus.connect-timeout-ms`
 - `assignor.load-aware.prometheus.request-timeout-ms`
 

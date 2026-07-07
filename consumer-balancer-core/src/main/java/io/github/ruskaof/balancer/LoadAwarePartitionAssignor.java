@@ -152,6 +152,13 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         public static final String PROMETHEUS_HOST = "assignor.load-aware.prometheus.host";
         public static final String PROMETHEUS_PORT = "assignor.load-aware.prometheus.port";
         public static final String PROMETHEUS_SCHEME = "assignor.load-aware.prometheus.scheme";
+        /**
+         * Optional path prefix prepended to {@code /api/v1/query} for
+         * Prometheus-API-compatible backends, e.g. {@code /prometheus} for single-node
+         * VictoriaMetrics or {@code /select/<accountID>/prometheus} for a
+         * VictoriaMetrics cluster. Default: empty (plain Prometheus).
+         */
+        public static final String PROMETHEUS_PATH_PREFIX = "assignor.load-aware.prometheus.path-prefix";
         public static final String PROMETHEUS_CONNECT_TIMEOUT_MS = "assignor.load-aware.prometheus.connect-timeout-ms";
         public static final String PROMETHEUS_REQUEST_TIMEOUT_MS = "assignor.load-aware.prometheus.request-timeout-ms";
         /**
@@ -184,12 +191,16 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             String scheme = configs.containsKey(PROMETHEUS_SCHEME)
                     ? configs.get(PROMETHEUS_SCHEME).toString()
                     : "http";
+            String pathPrefix = configs.containsKey(PROMETHEUS_PATH_PREFIX)
+                    ? configs.get(PROMETHEUS_PATH_PREFIX).toString()
+                    : "";
             long connectMs = parseLong(configs, PROMETHEUS_CONNECT_TIMEOUT_MS, 10_000L);
             long requestMs = parseLong(configs, PROMETHEUS_REQUEST_TIMEOUT_MS, 30_000L);
             return new PrometheusConnectionSettings(
                     scheme,
                     host,
                     port,
+                    pathPrefix,
                     Duration.ofMillis(connectMs),
                     Duration.ofMillis(requestMs));
         }

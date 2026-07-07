@@ -55,7 +55,7 @@ public class PrometheusClient {
             // URLEncoder encodes &, =, ? etc. as %26, %3D, %3F, preventing query parameter injection.
             // URI.create() treats the string as already raw/encoded and will not re-encode.
             String encodedPromql = URLEncoder.encode(promql, StandardCharsets.UTF_8);
-            return URI.create(settings.scheme() + "://" + settings.host() + ":" + settings.port()
+            return URI.create(settings.baseUrl() + settings.pathPrefix()
                     + "/api/v1/query?query=" + encodedPromql);
         } catch (IllegalArgumentException e) {
             throw new IOException("Failed to build Prometheus URI", e);
