@@ -17,8 +17,6 @@ Built-in Kafka assignors such as `RangeAssignor` and `RoundRobinAssignor` balanc
 - Spring Boot **4.0+** (Spring Framework 7, Spring for Apache Kafka 4.0, Apache Kafka clients 4.1+)
 - Java **21+**
 
-> For Spring Boot 3.x, use the `1.0.x` releases of this library.
-
 ## Quickstart (Gradle)
 
 Both modules are published to [Maven Central](https://central.sonatype.com/artifact/io.github.ruskaof/consumer-balancer-spring-boot-starter). Most users only need the starter, which pulls in `consumer-balancer-core` transitively:
@@ -134,15 +132,6 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 - Your PromQL must return series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
 - `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed — along with the member-id tracking that proactive rebalance relies on.
-
-## Migrating 2.x → 3.0.0
-
-- **Published POMs no longer import the Spring Boot BOM.** Releases up to 2.0.0 leaked `spring-boot-dependencies` into consumers' dependency management, which could pin unrelated libraries (e.g. `io.prometheus:prometheus-metrics-*` / Micrometer) to this library's versions. All dependencies are now explicitly versioned; manage your own versions as usual.
-- **`consumer-balancer.prometheus.*` is no longer copied into `spring.kafka.consumer.properties`.** The starter injects the `WeightService` bean into the consumer factory instead. If you relied on the merged `assignor.load-aware.prometheus.*` keys, or you define your own `ConsumerFactory` bean, set the `assignor.load-aware.*` keys yourself.
-- **Custom `WeightService`/`BalanceService` beans now drive the assignor too.** Previously they reached only the threshold trigger while the assignor silently kept the Prometheus defaults (and still required their configuration).
-- **`MemberIdTracker` moved to `consumer-balancer-core`** (same class name) and is no longer a spring-kafka `ConsumerAwareRebalanceListener`; the assignor reports member ids to it via `onAssignment`. Remove any manual rebalance-listener registration of the old class.
-- **Proactive rebalance now actually fires.** In earlier releases the member-id tracker was never registered with the listener containers, so no instance ever won the coordinator election and the threshold trigger never ran. Disable with `consumer-balancer.proactive-rebalance-enabled=false` if you don't want enforced rebalances.
-- The balancer's `AdminClient` is now built from the full `spring.kafka` admin properties (including security settings such as SSL/SASL) instead of bootstrap servers only.
 
 ## Build
 
