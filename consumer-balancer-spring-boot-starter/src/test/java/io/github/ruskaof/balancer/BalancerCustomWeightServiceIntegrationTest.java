@@ -24,8 +24,9 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The reported issue: a custom WeightService bean must drive the assignor too, without
- * any Prometheus configuration (note: no weight-query-template is set here).
+ * A custom WeightService bean must drive the assignor too — its instance lands in the
+ * consumer factory configs, and no Prometheus configuration is required (note: no
+ * weight-query-template is set here).
  */
 @SpringBootTest(classes = BalancerCustomWeightServiceIntegrationTest.TestApp.class, properties = {
         "spring.kafka.bootstrap-servers=127.0.0.1:9092",

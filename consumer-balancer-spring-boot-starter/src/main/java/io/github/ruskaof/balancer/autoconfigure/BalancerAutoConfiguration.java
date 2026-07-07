@@ -71,8 +71,8 @@ public class BalancerAutoConfiguration {
 
         @Bean(destroyMethod = "close")
         public AdminClient kafkaBalancerAdminClient(KafkaProperties kafkaProperties) {
-            // Full admin properties (not just bootstrap servers) so security settings
-            // like SSL/SASL from spring.kafka.* apply to the balancer's admin client too.
+            // Full admin properties so security settings like SSL/SASL from
+            // spring.kafka.* apply to the balancer's admin client too.
             return AdminClient.create(kafkaProperties.buildAdminProperties());
         }
 
