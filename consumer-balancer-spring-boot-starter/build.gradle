@@ -6,15 +6,17 @@ plugins {
 version = project.findProperty("version")
 group = project.findProperty("group")
 
+// Published module: no BOM/platform here — every dependency carries an explicit
+// version so the released POM is self-contained and imposes no constraints on consumers.
 dependencies {
     api project(':consumer-balancer-core')
-    implementation 'org.springframework.boot:spring-boot-autoconfigure'
-    implementation 'org.springframework.boot:spring-boot-kafka'
-    implementation 'org.springframework.kafka:spring-kafka'
-    implementation 'org.slf4j:slf4j-api'
-    implementation 'tools.jackson.core:jackson-databind'
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    implementation libs.spring.boot.autoconfigure
+    implementation libs.spring.boot.kafka
+    implementation libs.spring.kafka
+    implementation libs.slf4j.api
+    implementation libs.jackson.databind
+    testImplementation libs.spring.boot.starter.test
+    testRuntimeOnly libs.junit.platform.launcher
 }
 
 mavenPublishing {

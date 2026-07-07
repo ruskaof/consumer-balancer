@@ -15,9 +15,9 @@ Built-in Kafka assignors such as `RangeAssignor` and `RoundRobinAssignor` balanc
 ## Requirements
 
 - Spring Boot **4.0+** (Spring Framework 7, Spring for Apache Kafka 4.0, Apache Kafka clients 4.1+)
-- Java **17+**
+- Java **21+**
 
-> For Spring Boot 3.x, use the `1.0.0` release of this library.
+> For Spring Boot 3.x, use the `1.0.x` releases of this library.
 
 ## Quickstart (Gradle)
 
@@ -25,7 +25,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:2.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:3.0.0")
 }
 ```
 
@@ -33,7 +33,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:2.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:3.0.0")
 }
 ```
 
@@ -64,7 +64,9 @@ consumer-balancer:
 
 Placeholder `%s` is replaced with a `|`‑separated, regex‑escaped list of subscribed topic names for the instant query.
 
-`consumer-balancer.prometheus.*` is merged into `assignor.load-aware.prometheus.*` for the assignor. You can still set `assignor.load-aware.prometheus.*` under `spring.kafka.consumer.properties` explicitly; those values take precedence over `consumer-balancer` defaults where applicable.
+The starter injects the application context's `WeightService`, `BalanceService` and (when proactive rebalance is enabled) `MemberIdTracker` beans into Spring Boot's auto-configured consumer factory under the `assignor.load-aware.*` keys, so the assignor uses exactly the same collaborators as the rebalance trigger. Values set explicitly under `spring.kafka.consumer.properties.assignor.load-aware.*` win over the injected beans.
+
+If you define your own `ConsumerFactory` bean, Boot's factory customizers do not run for it — set the `assignor.load-aware.*` keys on your factory yourself (the `BalancerConsumerFactoryCustomizer` bean can be applied manually).
 
 ## Configuration reference (`consumer-balancer`)
 
@@ -82,18 +84,48 @@ Placeholder `%s` is replaced with a `|`‑separated, regex‑escaped list of sub
 | `consumer-balancer.coordinator.election-interval` | `30s` | How often coordinator election runs. |
 | `consumer-balancer.coordinator.trigger-check-interval` | `30s` | How often the coordinator evaluates the rebalance trigger. |
 
-Assignor keys (merged from `consumer-balancer.prometheus` when not set in YAML):
+## Assignor configuration (consumer configs)
 
-- `assignor.load-aware.prometheus.weight-query-template` (required for load-aware assignor)
+`LoadAwarePartitionAssignor` reads its collaborators from the Kafka consumer configs. Each of these keys accepts an **instance** (when the config map is built programmatically), a **`Class`**, or a **fully-qualified class name** (instantiated via its public no-arg constructor; implementations of Kafka's `Configurable` receive the consumer configs):
+
+- `assignor.load-aware.weight-service` — `WeightService` used for assignment. When absent, the Prometheus-backed default is built from the keys below.
+- `assignor.load-aware.balance-service` — `BalanceService` used for assignment (default: `SortingRoundRobinBalanceService`).
+- `assignor.load-aware.member-id-tracker` — optional `MemberIdTracker` that receives this consumer's member id after every rebalance (needed for proactive rebalance).
+
+Prometheus keys, required **only** when `assignor.load-aware.weight-service` is not set (the Spring Boot starter covers this case by injecting the `WeightService` bean instead):
+
+- `assignor.load-aware.prometheus.weight-query-template`
 - `assignor.load-aware.prometheus.host`
 - `assignor.load-aware.prometheus.port`
 - `assignor.load-aware.prometheus.scheme`
 - `assignor.load-aware.prometheus.connect-timeout-ms`
 - `assignor.load-aware.prometheus.request-timeout-ms`
 
+Plain-Java example with a custom weight source and member tracking for proactive rebalance:
+
+```java
+MemberIdTracker tracker = new MemberIdTracker();
+WeightService weights = new MyDatabaseWeightService(dataSource);
+
+Map<String, Object> configs = new HashMap<>();
+configs.put("bootstrap.servers", "localhost:9092");
+configs.put("group.id", "my-group");
+configs.put("partition.assignment.strategy", LoadAwarePartitionAssignor.class.getName());
+configs.put("assignor.load-aware.weight-service", weights);    // or a class name
+configs.put("assignor.load-aware.member-id-tracker", tracker); // optional
+
+var consumer = new KafkaConsumer<>(configs, new StringDeserializer(), new ByteArrayDeserializer());
+// For proactive rebalance, hand the same tracker to the election:
+// new CoordinatorElection.Builder()
+//         .setMemberIdsSupplier(() -> tracker.getCurrentMemberIds("my-group"))
+//         ...
+```
+
+> Kafka logs a "supplied but isn't a known config" warning for these custom keys — that is harmless.
+
 ## Custom weight store
 
-Implement `io.github.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present.
+Implement `io.github.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present, and the bean drives **both** the `LoadAwarePartitionAssignor` and the proactive `ThresholdTrigger` — no `consumer-balancer.prometheus.*` configuration is needed in that case. The same override mechanism applies to `BalanceService`.
 
 Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder` (or `TemplatedKafkaRatePromqlBuilder`) for custom PromQL while still using Prometheus.
 
@@ -101,7 +133,16 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 
 - Your PromQL must return series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
-- `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed.
+- `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed — along with the member-id tracking that proactive rebalance relies on.
+
+## Migrating 2.x → 3.0.0
+
+- **Published POMs no longer import the Spring Boot BOM.** Releases up to 2.0.0 leaked `spring-boot-dependencies` into consumers' dependency management, which could pin unrelated libraries (e.g. `io.prometheus:prometheus-metrics-*` / Micrometer) to this library's versions. All dependencies are now explicitly versioned; manage your own versions as usual.
+- **`consumer-balancer.prometheus.*` is no longer copied into `spring.kafka.consumer.properties`.** The starter injects the `WeightService` bean into the consumer factory instead. If you relied on the merged `assignor.load-aware.prometheus.*` keys, or you define your own `ConsumerFactory` bean, set the `assignor.load-aware.*` keys yourself.
+- **Custom `WeightService`/`BalanceService` beans now drive the assignor too.** Previously they reached only the threshold trigger while the assignor silently kept the Prometheus defaults (and still required their configuration).
+- **`MemberIdTracker` moved to `consumer-balancer-core`** (same class name) and is no longer a spring-kafka `ConsumerAwareRebalanceListener`; the assignor reports member ids to it via `onAssignment`. Remove any manual rebalance-listener registration of the old class.
+- **Proactive rebalance now actually fires.** In earlier releases the member-id tracker was never registered with the listener containers, so no instance ever won the coordinator election and the threshold trigger never ran. Disable with `consumer-balancer.proactive-rebalance-enabled=false` if you don't want enforced rebalances.
+- The balancer's `AdminClient` is now built from the full `spring.kafka` admin properties (including security settings such as SSL/SASL) instead of bootstrap servers only.
 
 ## Build
 

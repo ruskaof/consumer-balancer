@@ -6,12 +6,14 @@ plugins {
 version = project.findProperty("version")
 group = project.findProperty("group")
 
+// Published module: no BOM/platform here — every dependency carries an explicit
+// version so the released POM is self-contained and imposes no constraints on consumers.
 dependencies {
-    api 'org.apache.kafka:kafka-clients'
-    implementation 'org.slf4j:slf4j-api'
-    implementation 'tools.jackson.core:jackson-databind'
-    testRuntimeOnly 'ch.qos.logback:logback-classic'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    api libs.kafka.clients
+    implementation libs.slf4j.api
+    implementation libs.jackson.databind
+    testRuntimeOnly libs.logback.classic
+    testRuntimeOnly libs.junit.platform.launcher
 }
 
 mavenPublishing {
