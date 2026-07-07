@@ -1,4 +1,3 @@
-io.github.ruskaof.balancer.autoconfigure.KafkaBalancerKafkaPropertiesMergeConfiguration
 io.github.ruskaof.balancer.autoconfigure.DefaultKafkaRatePromqlBuilderAutoConfiguration
 io.github.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration
 io.github.ruskaof.balancer.autoconfigure.PrometheusWeightAutoConfiguration

@@ -37,6 +37,7 @@ class PrometheusClientTest {
                     "http",
                     "127.0.0.1",
                     port,
+                    "",
                     Duration.ofSeconds(5),
                     Duration.ofSeconds(5));
             PrometheusClient client = new PrometheusClient(settings, new JsonMapper());
@@ -44,6 +45,45 @@ class PrometheusClientTest {
             assertEquals("success", r.getStatus());
             assertNotNull(r.getData());
             assertEquals(1, r.getData().getResult().size());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void getInstantValueQueriesUnderConfiguredPathPrefix() throws Exception {
+        String body = """
+                {"status":"success","data":{"result":[]}}
+                """;
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        // VictoriaMetrics cluster layout: vmselect serves the Prometheus API under
+        // /select/<accountID>/prometheus.
+        server.createContext("/select/0/prometheus/api/v1/query", exchange -> {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        });
+        server.createContext("/api/v1/query", exchange -> {
+            exchange.sendResponseHeaders(404, 0);
+            exchange.close();
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            PrometheusConnectionSettings settings = new PrometheusConnectionSettings(
+                    "http",
+                    "127.0.0.1",
+                    port,
+                    "/select/0/prometheus",
+                    Duration.ofSeconds(5),
+                    Duration.ofSeconds(5));
+            PrometheusClient client = new PrometheusClient(settings, new JsonMapper());
+            PromqlResponse r = client.getInstantValue("up");
+            assertEquals("success", r.getStatus());
         } finally {
             server.stop(0);
         }
@@ -63,6 +103,7 @@ class PrometheusClientTest {
                     "http",
                     "127.0.0.1",
                     port,
+                    "",
                     Duration.ofSeconds(5),
                     Duration.ofSeconds(5));
             PrometheusClient client = new PrometheusClient(settings, new JsonMapper());

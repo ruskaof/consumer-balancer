@@ -1,5 +1,5 @@
 group = 'io.github.ruskaof'
-version = '2.0.0'
+version = '3.0.0'
 
 subprojects {
     repositories {
@@ -14,11 +14,9 @@ subprojects {
         }
 
         dependencies {
-            implementation platform('org.springframework.boot:spring-boot-dependencies:4.0.7')
-            compileOnly 'org.projectlombok:lombok:1.18.42'
-            annotationProcessor 'org.projectlombok:lombok:1.18.42'
-            // JUnit is managed by the Spring Boot 4 BOM (Jupiter 6.x); no explicit junit-bom pin.
-            testImplementation 'org.junit.jupiter:junit-jupiter'
+            compileOnly libs.lombok
+            annotationProcessor libs.lombok
+            testImplementation libs.junit.jupiter
         }
 
         test {

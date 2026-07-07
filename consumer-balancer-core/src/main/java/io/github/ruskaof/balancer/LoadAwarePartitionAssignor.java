@@ -9,6 +9,7 @@ import io.github.ruskaof.balancer.prometheus.PrometheusObjectMappers;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.NoArgsConstructor;
+import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.RoundRobinAssignor;
 import org.apache.kafka.clients.consumer.internals.AbstractPartitionAssignor;
 import org.apache.kafka.common.Configurable;
@@ -19,6 +20,15 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.*;
 
+/**
+ * Partition assignor that weights partitions by observed load and spreads them greedily.
+ *
+ * <p>Collaborators are taken from the consumer configs (see {@link LoadAwareAssignorConfig}):
+ * {@code assignor.load-aware.weight-service}, {@code assignor.load-aware.balance-service} and
+ * {@code assignor.load-aware.member-id-tracker} each accept an instance, a {@link Class} or a
+ * class name. When no weight service is configured, a Prometheus-backed default is built from
+ * the {@code assignor.load-aware.prometheus.*} configs.
+ */
 @NoArgsConstructor // For Kafka's reflection-based instantiation
 public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implements Configurable {
 
@@ -26,6 +36,8 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
     private WeightService weightService = null;
     private BalanceService balanceService = null;
+    private MemberIdTracker memberIdTracker = null;
+    private String lastReportedMemberId = null;
     private final RoundRobinAssignor fallbackAssignor = new RoundRobinAssignor();
 
     @Override
@@ -70,24 +82,83 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
     @Override
     public void configure(Map<String, ?> configs) {
+        BalanceService configuredBalanceService = ConfigInstanceResolver.resolveOrNull(
+                configs, LoadAwareAssignorConfig.BALANCE_SERVICE, BalanceService.class);
+        this.balanceService = configuredBalanceService != null
+                ? configuredBalanceService
+                : new SortingRoundRobinBalanceService();
+
+        WeightService configuredWeightService = ConfigInstanceResolver.resolveOrNull(
+                configs, LoadAwareAssignorConfig.WEIGHT_SERVICE, WeightService.class);
+        this.weightService = configuredWeightService != null
+                ? configuredWeightService
+                : createDefaultPrometheusWeightService(configs);
+
+        this.memberIdTracker = ConfigInstanceResolver.resolveOrNull(
+                configs, LoadAwareAssignorConfig.MEMBER_ID_TRACKER, MemberIdTracker.class);
+    }
+
+    /**
+     * Reports this consumer's member id to the configured {@link MemberIdTracker} so
+     * coordinator election can recognize member ids owned by this JVM.
+     */
+    @Override
+    public void onAssignment(Assignment assignment, ConsumerGroupMetadata metadata) {
+        if (memberIdTracker == null || metadata == null) {
+            return;
+        }
+        String memberId = metadata.memberId();
+        if (memberId == null || memberId.isBlank()) {
+            return;
+        }
+        memberIdTracker.updateMemberId(metadata.groupId(), lastReportedMemberId, memberId);
+        lastReportedMemberId = memberId;
+    }
+
+    private static PrometheusWeightService createDefaultPrometheusWeightService(Map<String, ?> configs) {
         PrometheusConnectionSettings settings = LoadAwareAssignorConfig.connectionSettingsFrom(configs);
         var prometheusClient = new PrometheusClient(settings, PrometheusObjectMappers.create());
-
-        this.balanceService = new SortingRoundRobinBalanceService();
         String weightQueryTemplate = requireNonBlank(
                 configs,
                 LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE,
                 "Required when using load-aware assignor: assignor.load-aware.prometheus.weight-query-template "
-                        + "(must contain %s)");
-        this.weightService = new PrometheusWeightService(
+                        + "(must contain %s; not required when assignor.load-aware.weight-service is set)");
+        return new PrometheusWeightService(
                 new TemplatedKafkaRatePromqlBuilder(weightQueryTemplate),
                 prometheusClient);
     }
 
     public static class LoadAwareAssignorConfig {
+        /**
+         * {@link WeightService} used by the assignor. Value: an instance, a {@link Class},
+         * or a class name with a public no-arg constructor (a {@code Configurable}
+         * implementation gets {@code configure(configs)} called). When absent, the
+         * Prometheus-backed default applies and the {@code assignor.load-aware.prometheus.*}
+         * configs become required.
+         */
+        public static final String WEIGHT_SERVICE = "assignor.load-aware.weight-service";
+        /**
+         * {@link BalanceService} used by the assignor. Value: an instance, a {@link Class},
+         * or a class name. Default: {@link SortingRoundRobinBalanceService}.
+         */
+        public static final String BALANCE_SERVICE = "assignor.load-aware.balance-service";
+        /**
+         * Optional {@link MemberIdTracker} that receives this consumer's member id after
+         * each rebalance. Value: an instance, a {@link Class}, or a class name. Pass the
+         * same instance to {@code CoordinatorElection} for proactive rebalancing.
+         */
+        public static final String MEMBER_ID_TRACKER = "assignor.load-aware.member-id-tracker";
+
         public static final String PROMETHEUS_HOST = "assignor.load-aware.prometheus.host";
         public static final String PROMETHEUS_PORT = "assignor.load-aware.prometheus.port";
         public static final String PROMETHEUS_SCHEME = "assignor.load-aware.prometheus.scheme";
+        /**
+         * Optional path prefix prepended to {@code /api/v1/query} for
+         * Prometheus-API-compatible backends, e.g. {@code /prometheus} for single-node
+         * VictoriaMetrics or {@code /select/<accountID>/prometheus} for a
+         * VictoriaMetrics cluster. Default: empty (plain Prometheus).
+         */
+        public static final String PROMETHEUS_PATH_PREFIX = "assignor.load-aware.prometheus.path-prefix";
         public static final String PROMETHEUS_CONNECT_TIMEOUT_MS = "assignor.load-aware.prometheus.connect-timeout-ms";
         public static final String PROMETHEUS_REQUEST_TIMEOUT_MS = "assignor.load-aware.prometheus.request-timeout-ms";
         /**
@@ -99,14 +170,16 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             Object hostObj = configs.get(PROMETHEUS_HOST);
             if (hostObj == null || hostObj.toString().isBlank()) {
                 throw new IllegalArgumentException(
-                        "Required when using load-aware assignor: assignor.load-aware.prometheus.host");
+                        "Required when using load-aware assignor: assignor.load-aware.prometheus.host"
+                                + " (not required when assignor.load-aware.weight-service is set)");
             }
             String host = hostObj.toString();
 
             Object portObj = configs.get(PROMETHEUS_PORT);
             if (portObj == null || portObj.toString().isBlank()) {
                 throw new IllegalArgumentException(
-                        "Required when using load-aware assignor: assignor.load-aware.prometheus.port");
+                        "Required when using load-aware assignor: assignor.load-aware.prometheus.port"
+                                + " (not required when assignor.load-aware.weight-service is set)");
             }
             int port;
             try {
@@ -118,12 +191,16 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             String scheme = configs.containsKey(PROMETHEUS_SCHEME)
                     ? configs.get(PROMETHEUS_SCHEME).toString()
                     : "http";
+            String pathPrefix = configs.containsKey(PROMETHEUS_PATH_PREFIX)
+                    ? configs.get(PROMETHEUS_PATH_PREFIX).toString()
+                    : "";
             long connectMs = parseLong(configs, PROMETHEUS_CONNECT_TIMEOUT_MS, 10_000L);
             long requestMs = parseLong(configs, PROMETHEUS_REQUEST_TIMEOUT_MS, 30_000L);
             return new PrometheusConnectionSettings(
                     scheme,
                     host,
                     port,
+                    pathPrefix,
                     Duration.ofMillis(connectMs),
                     Duration.ofMillis(requestMs));
         }

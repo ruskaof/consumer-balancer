@@ -73,6 +73,14 @@ public class KafkaBalancerProperties {
         private String host = "localhost";
         private int port = 9090;
         private String scheme = "http";
+
+        /**
+         * Path prefix prepended to {@code /api/v1/query} for Prometheus-API-compatible
+         * backends, e.g. {@code /prometheus} for single-node VictoriaMetrics or
+         * {@code /select/<accountID>/prometheus} for a VictoriaMetrics cluster.
+         * Empty for plain Prometheus.
+         */
+        private String pathPrefix = "";
         private Duration connectTimeout = Duration.ofSeconds(10);
         private Duration requestTimeout = Duration.ofSeconds(30);
 
@@ -106,6 +114,14 @@ public class KafkaBalancerProperties {
 
         public void setScheme(String scheme) {
             this.scheme = scheme;
+        }
+
+        public String getPathPrefix() {
+            return pathPrefix;
+        }
+
+        public void setPathPrefix(String pathPrefix) {
+            this.pathPrefix = pathPrefix;
         }
 
         public Duration getConnectTimeout() {

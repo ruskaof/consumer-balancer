@@ -1,9 +1,12 @@
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '4.0.7'
+    alias(libs.plugins.spring.boot)
 }
 
 dependencies {
+    // Unpublished demo app: version management via the Spring Boot BOM is fine here.
+    implementation platform(org.springframework.boot.gradle.plugin.SpringBootPlugin.BOM_COORDINATES)
+
     // Perf-test harness consumes the local starter so it exercises the code in this repo.
     // (Published consumers use: io.github.ruskaof:consumer-balancer-spring-boot-starter)
     implementation project(':consumer-balancer-spring-boot-starter')
