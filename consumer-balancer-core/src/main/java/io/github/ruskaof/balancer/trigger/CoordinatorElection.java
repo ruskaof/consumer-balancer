@@ -14,6 +14,8 @@ import java.util.function.Supplier;
 @Slf4j
 public class CoordinatorElection implements AutoCloseable {
 
+    private static final long DESCRIBE_TIMEOUT_MS = 30_000L;
+
     private final String groupId;
     private final Supplier<Set<String>> memberIdsSupplier;
     private final AdminClient adminClient;
@@ -44,7 +46,7 @@ public class CoordinatorElection implements AutoCloseable {
 
     public void start() {
         if (running.get()) {
-            scheduler.scheduleAtFixedRate(this::runElection, 0, electionIntervalMs, TimeUnit.MILLISECONDS);
+            scheduler.scheduleWithFixedDelay(this::runElection, 0, electionIntervalMs, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -55,7 +57,8 @@ public class CoordinatorElection implements AutoCloseable {
         try {
             DescribeConsumerGroupsResult result = adminClient
                     .describeConsumerGroups(Collections.singletonList(groupId));
-            ConsumerGroupDescription desc = result.describedGroups().get(groupId).get();
+            ConsumerGroupDescription desc = result.describedGroups().get(groupId)
+                    .get(DESCRIBE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
             List<String> sortedMembers = desc.members().stream()
                     .map(MemberDescription::consumerId)
@@ -74,7 +77,7 @@ public class CoordinatorElection implements AutoCloseable {
 
             boolean newStatus = currentMemberIds.stream()
                     .anyMatch((memberId) -> memberId.equals(sortedMembers.getFirst()));
-            log.info("Current memberIds: {}, sortedMemberIds:{}, election result: {}", currentMemberIds, sortedMembers,
+            log.debug("Current memberIds: {}, sortedMemberIds:{}, election result: {}", currentMemberIds, sortedMembers,
                     newStatus);
 
             if (isCoordinator.getAndSet(newStatus) != newStatus) {
@@ -83,6 +86,9 @@ public class CoordinatorElection implements AutoCloseable {
                         sortedMembers.isEmpty() ? "N/A" : sortedMembers.getFirst());
                 notifyListeners(newStatus);
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted during election for group '{}'", groupId);
         } catch (Exception e) {
             log.warn("Election failed for group '{}'", groupId, e);
         }

@@ -10,4 +10,6 @@ import lombok.NoArgsConstructor;
 public class PromqlResponse {
     private String status;
     private PrometheusData data;
+    private String errorType;
+    private String error;
 }

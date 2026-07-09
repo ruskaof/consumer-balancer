@@ -10,10 +10,17 @@ import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.common.TopicPartition;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 
+/**
+ * Fires when the most loaded member carries more than {@code threshold} times the load it
+ * would carry under the optimal assignment computed from current weights.
+ */
 @Slf4j
 @RequiredArgsConstructor
 public class ThresholdTrigger implements RebalanceTrigger {
+
+    private static final long DESCRIBE_TIMEOUT_MS = 30_000L;
 
     private final AdminClient adminClient;
     private final String groupId;
@@ -28,7 +35,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
             var groupDescription = adminClient.describeConsumerGroups(List.of(groupId))
                     .describedGroups()
                     .get(groupId)
-                    .get();
+                    .get(DESCRIBE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
             var allPartitions = new HashSet<TopicPartition>();
             var currentAssignment = new HashMap<String, List<TopicPartition>>();
@@ -40,19 +47,39 @@ public class ThresholdTrigger implements RebalanceTrigger {
             }
 
             var weights = weightService.computeWeights(allPartitions);
-            var optimalAssignment = balanceService.computeOptimalAssignment(currentAssignment.keySet(), weights);
+
+            // The admin API does not expose member subscriptions, so every member is
+            // treated as eligible for every topic in the group.
+            Set<String> allTopics = new HashSet<>();
+            for (TopicPartition tp : allPartitions) {
+                allTopics.add(tp.topic());
+            }
+            var subscribedTopicsByMember = new HashMap<String, Set<String>>();
+            for (String member : currentAssignment.keySet()) {
+                subscribedTopicsByMember.put(member, allTopics);
+            }
+
+            var optimalAssignment = balanceService.computeOptimalAssignment(subscribedTopicsByMember, weights);
             var optimalMaxLoaded = calculateMaxLoadedMember(optimalAssignment, weights);
             var currentMaxLoaded = calculateMaxLoadedMember(currentAssignment, weights);
 
             if (optimalMaxLoaded == null || currentMaxLoaded == null) {
                 return false;
             }
+            if (optimalMaxLoaded.memberLoad <= 0.0) {
+                // All weights are zero; there is no imbalance to fix.
+                return false;
+            }
 
             boolean shouldTrigger = currentMaxLoaded.memberLoad / optimalMaxLoaded.memberLoad > threshold;
 
-            log.info("ThresholdTrigger result: optimalMaxLoaded={}, currentMaxLoaded={}, shouldTrigger={}",
+            log.debug("ThresholdTrigger result: optimalMaxLoaded={}, currentMaxLoaded={}, shouldTrigger={}",
                     optimalMaxLoaded, currentMaxLoaded, shouldTrigger);
             return shouldTrigger;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted while running ThresholdTrigger", e);
+            return false;
         } catch (Exception e) {
             log.error("Could not run ThresholdTrigger", e);
             return false;

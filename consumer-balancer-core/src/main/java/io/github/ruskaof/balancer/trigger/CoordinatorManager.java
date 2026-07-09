@@ -46,14 +46,17 @@ public class CoordinatorManager implements AutoCloseable {
     }
 
     public void start() {
-        election.start();
+        // The listener must be registered before the first election runs; otherwise an
+        // immediate election result would be notified into an empty listener list and
+        // monitoring would only start on the next status change.
         election.addListener(this::onCoordinatorStatusChange);
+        election.start();
     }
 
     private void onCoordinatorStatusChange(boolean isCoordinator) {
         if (isCoordinator && monitoring.compareAndSet(false, true)) {
             log.info("Became coordinator - starting trigger monitoring");
-            triggerFuture = scheduler.scheduleAtFixedRate(
+            triggerFuture = scheduler.scheduleWithFixedDelay(
                     this::evaluateTrigger,
                     0,
                     triggerCheckIntervalMs,
@@ -65,7 +68,7 @@ public class CoordinatorManager implements AutoCloseable {
     }
 
     private void evaluateTrigger() {
-        log.info("Evaluating trigger in Coordinator manager");
+        log.debug("Evaluating rebalance trigger");
         if (!running.get() || !election.isCoordinator())
             return;
 

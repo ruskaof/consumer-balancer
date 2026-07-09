@@ -1,0 +1,8 @@
+.git
+.gradle
+.idea
+build
+**/build
+test-out
+docs
+test-scripts/load-generator/.venv

@@ -10,6 +10,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -84,6 +85,76 @@ class PrometheusClientTest {
             PrometheusClient client = new PrometheusClient(settings, new JsonMapper());
             PromqlResponse r = client.getInstantValue("up");
             assertEquals("success", r.getStatus());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void getInstantValueThrowsOnErrorStatusInBody() throws Exception {
+        String body = """
+                {"status":"error","errorType":"bad_data","error":"invalid parameter"}
+                """;
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/query", exchange -> {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            PrometheusConnectionSettings settings = new PrometheusConnectionSettings(
+                    "http",
+                    "127.0.0.1",
+                    port,
+                    "",
+                    Duration.ofSeconds(5),
+                    Duration.ofSeconds(5));
+            PrometheusClient client = new PrometheusClient(settings, new JsonMapper());
+            IOException ex = assertThrows(IOException.class, () -> client.getInstantValue("up"));
+            assertTrue(ex.getMessage().contains("bad_data"), ex.getMessage());
+            assertTrue(ex.getMessage().contains("invalid parameter"), ex.getMessage());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void sendsConfiguredAuthorizationHeader() throws Exception {
+        String body = """
+                {"status":"success","data":{"result":[]}}
+                """;
+        AtomicReference<String> receivedAuthorization = new AtomicReference<>();
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/query", exchange -> {
+            receivedAuthorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        });
+        server.start();
+        try {
+            int port = server.getAddress().getPort();
+            PrometheusConnectionSettings settings = new PrometheusConnectionSettings(
+                    "http",
+                    "127.0.0.1",
+                    port,
+                    "",
+                    "Bearer token-123",
+                    Duration.ofSeconds(5),
+                    Duration.ofSeconds(5));
+            PrometheusClient client = new PrometheusClient(settings, new JsonMapper());
+            client.getInstantValue("up");
+            assertEquals("Bearer token-123", receivedAuthorization.get());
         } finally {
             server.stop(0);
         }

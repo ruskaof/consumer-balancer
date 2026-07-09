@@ -18,6 +18,7 @@ public final class PrometheusConnectionSettingsFactory {
                 p.getHost(),
                 p.getPort(),
                 p.getPathPrefix(),
+                p.getAuthorization(),
                 p.getConnectTimeout(),
                 p.getRequestTimeout());
     }

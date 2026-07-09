@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:3.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:4.0.0")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:3.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:4.0.0")
 }
 ```
 
@@ -88,6 +88,7 @@ If you define your own `ConsumerFactory` bean, Boot's factory customizers do not
 | `consumer-balancer.prometheus.host` | `localhost` | Prometheus host. |
 | `consumer-balancer.prometheus.port` | `9090` | Prometheus port. |
 | `consumer-balancer.prometheus.path-prefix` | *(empty)* | Path prefix prepended to `/api/v1/query` for Prometheus-API-compatible backends, e.g. `/prometheus` (single-node VictoriaMetrics) or `/select/<accountID>/prometheus` (VictoriaMetrics cluster). |
+| `consumer-balancer.prometheus.authorization` | *(none)* | Optional `Authorization` header value sent with every query, e.g. `Bearer <token>` or `Basic <base64>`. |
 | `consumer-balancer.prometheus.connect-timeout` | `10s` | HTTP connect timeout. |
 | `consumer-balancer.prometheus.request-timeout` | `30s` | HTTP request timeout (per query). |
 | `consumer-balancer.coordinator.election-interval` | `30s` | How often coordinator election runs. |
@@ -108,6 +109,7 @@ Prometheus keys, required **only** when `assignor.load-aware.weight-service` is 
 - `assignor.load-aware.prometheus.port`
 - `assignor.load-aware.prometheus.scheme`
 - `assignor.load-aware.prometheus.path-prefix`
+- `assignor.load-aware.prometheus.authorization`
 - `assignor.load-aware.prometheus.connect-timeout-ms`
 - `assignor.load-aware.prometheus.request-timeout-ms`
 
@@ -137,11 +139,15 @@ var consumer = new KafkaConsumer<>(configs, new StringDeserializer(), new ByteAr
 
 Implement `io.github.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. The default `PrometheusWeightService` + `PrometheusClient` beans are omitted when a `WeightService` bean is present, and the bean drives **both** the `LoadAwarePartitionAssignor` and the proactive `ThresholdTrigger` — no `consumer-balancer.prometheus.*` configuration is needed in that case. The same override mechanism applies to `BalanceService`.
 
+The returned map is treated as a lookup over the requested partitions: requested partitions that are missing (or mapped to `null`/non-finite values) fall back to the default weight `1.0`, and entries for partitions that were not requested are ignored.
+
 Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRatePromqlBuilder` (or `TemplatedKafkaRatePromqlBuilder`) for custom PromQL while still using Prometheus.
 
 ## Operations
 
-- Your PromQL must return series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`.
+- Your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
+- Partitions are assigned only to members subscribed to their topic, so groups whose members subscribe to different topic sets are handled correctly.
+- Proactive rebalance requires a group id in `spring.kafka.consumer.group-id`; only the listener containers of that group receive `enforceRebalance()`.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
 - `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed — along with the member-id tracking that proactive rebalance relies on.
 

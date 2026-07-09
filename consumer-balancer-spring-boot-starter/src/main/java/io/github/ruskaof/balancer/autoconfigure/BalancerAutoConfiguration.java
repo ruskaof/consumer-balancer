@@ -65,7 +65,7 @@ public class BalancerAutoConfiguration {
         public Supplier<Set<String>> coordinatorMemberIdSupplier(
                 MemberIdTracker memberIdTracker,
                 KafkaProperties kafkaProperties) {
-            String groupId = kafkaProperties.getConsumer().getGroupId();
+            String groupId = requireConsumerGroupId(kafkaProperties);
             return () -> memberIdTracker.getCurrentMemberIds(groupId);
         }
 
@@ -86,7 +86,7 @@ public class BalancerAutoConfiguration {
                 KafkaBalancerProperties kafkaBalancerProperties) {
             return new ThresholdTrigger(
                     kafkaBalancerAdminClient,
-                    kafkaProperties.getConsumer().getGroupId(),
+                    requireConsumerGroupId(kafkaProperties),
                     weightService,
                     kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
                     balanceService);
@@ -94,8 +94,9 @@ public class BalancerAutoConfiguration {
 
         @Bean
         public CoordinatorManager.RebalanceInitiator rebalanceInitiator(
-                KafkaListenerEndpointRegistry registry) {
-            return new ContainerRegistryRebalanceInitiator(registry);
+                KafkaListenerEndpointRegistry registry,
+                KafkaProperties kafkaProperties) {
+            return new ContainerRegistryRebalanceInitiator(registry, requireConsumerGroupId(kafkaProperties));
         }
 
         @Bean
@@ -106,7 +107,7 @@ public class BalancerAutoConfiguration {
                 KafkaBalancerProperties properties,
                 KafkaProperties kafkaProperties,
                 AdminClient kafkaBalancerAdminClient) {
-            String groupId = kafkaProperties.getConsumer().getGroupId();
+            String groupId = requireConsumerGroupId(kafkaProperties);
 
             CoordinatorElection election = new CoordinatorElection.Builder()
                     .setGroupId(groupId)
@@ -125,6 +126,17 @@ public class BalancerAutoConfiguration {
         @Bean
         public CoordinatorManagerLifecycle coordinatorManagerLifecycle(CoordinatorManager coordinatorManager) {
             return new CoordinatorManagerLifecycle(coordinatorManager);
+        }
+
+        private static String requireConsumerGroupId(KafkaProperties kafkaProperties) {
+            String groupId = kafkaProperties.getConsumer().getGroupId();
+            if (groupId == null || groupId.isBlank()) {
+                throw new IllegalStateException(
+                        "consumer-balancer proactive rebalance requires spring.kafka.consumer.group-id."
+                                + " Set it, or turn the proactive path off with"
+                                + " consumer-balancer.proactive-rebalance-enabled=false.");
+            }
+            return groupId;
         }
     }
 }

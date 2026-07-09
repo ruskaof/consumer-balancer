@@ -12,12 +12,17 @@ import java.util.Objects;
  * {@code /select/<accountID>/prometheus} for a VictoriaMetrics cluster (vmselect).
  * The value is normalized to either an empty string or a {@code /}-prefixed path without
  * a trailing slash; {@code null} counts as empty.
+ *
+ * <p>{@code authorizationHeader} is the full value of the {@code Authorization} header
+ * sent with every query, e.g. {@code Bearer <token>} or {@code Basic <base64>};
+ * {@code null} or blank means no header is sent.
  */
 public record PrometheusConnectionSettings(
         String scheme,
         String host,
         int port,
         String pathPrefix,
+        String authorizationHeader,
         Duration connectTimeout,
         Duration requestTimeout) {
 
@@ -27,6 +32,20 @@ public record PrometheusConnectionSettings(
         Objects.requireNonNull(connectTimeout, "connectTimeout");
         Objects.requireNonNull(requestTimeout, "requestTimeout");
         pathPrefix = normalizePathPrefix(pathPrefix);
+        authorizationHeader = normalizeAuthorizationHeader(authorizationHeader);
+    }
+
+    /**
+     * Settings without an {@code Authorization} header.
+     */
+    public PrometheusConnectionSettings(
+            String scheme,
+            String host,
+            int port,
+            String pathPrefix,
+            Duration connectTimeout,
+            Duration requestTimeout) {
+        this(scheme, host, port, pathPrefix, null, connectTimeout, requestTimeout);
     }
 
     /**
@@ -48,5 +67,12 @@ public record PrometheusConnectionSettings(
             normalized = normalized.substring(0, normalized.length() - 1);
         }
         return normalized;
+    }
+
+    private static String normalizeAuthorizationHeader(String authorizationHeader) {
+        if (authorizationHeader == null || authorizationHeader.isBlank()) {
+            return null;
+        }
+        return authorizationHeader.strip();
     }
 }

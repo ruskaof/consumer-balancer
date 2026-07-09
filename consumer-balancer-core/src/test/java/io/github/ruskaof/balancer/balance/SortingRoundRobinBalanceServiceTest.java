@@ -7,15 +7,13 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.util.*;
-import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Demonstrates that greedy least-loaded assignment lowers the worst consumer
- * load compared to
- * Kafka's {@link RoundRobinAssignor} when partition weights are skewed (hot
- * partitions).
+ * Covers the greedy least-loaded placement: it lowers the worst consumer load compared to
+ * Kafka's {@link RoundRobinAssignor} when partition weights are skewed, and it assigns a
+ * partition only to members subscribed to its topic.
  */
 class SortingRoundRobinBalanceServiceTest {
 
@@ -33,7 +31,8 @@ class SortingRoundRobinBalanceServiceTest {
             weights.put(tp, w);
         }
 
-        Map<String, List<TopicPartition>> greedy = loadAware.computeOptimalAssignment(members, weights);
+        Map<String, List<TopicPartition>> greedy =
+                loadAware.computeOptimalAssignment(homogeneous(members, topic), weights);
         Map<String, List<TopicPartition>> roundRobin = roundRobinAssignment(topic, numPartitions, members);
 
         double greedyMax = maxMemberLoad(greedy, weights);
@@ -45,6 +44,64 @@ class SortingRoundRobinBalanceServiceTest {
                         "Greedy max load (%.2f) should be < round-robin max load (%.2f). "
                                 + "Greedy=%s RR=%s weights=%s",
                         greedyMax, rrMax, greedy, roundRobin, weights));
+    }
+
+    @Test
+    void assignsPartitionsOnlyToSubscribedMembers() {
+        Map<String, Set<String>> subscribedTopics = Map.of(
+                "c0", Set.of("a"),
+                "c1", Set.of("a", "b"));
+        Map<TopicPartition, Double> weights = Map.of(
+                new TopicPartition("a", 0), 10.0,
+                new TopicPartition("b", 0), 100.0,
+                new TopicPartition("b", 1), 1.0);
+
+        Map<String, List<TopicPartition>> assignment =
+                loadAware.computeOptimalAssignment(subscribedTopics, weights);
+
+        assertEquals(
+                List.of(new TopicPartition("b", 0), new TopicPartition("b", 1)),
+                assignment.get("c1").stream()
+                        .filter(tp -> tp.topic().equals("b"))
+                        .sorted(Comparator.comparingInt(TopicPartition::partition))
+                        .toList(),
+                "only c1 subscribes to topic 'b', so it must receive every 'b' partition");
+        assertTrue(assignment.get("c0").stream().allMatch(tp -> tp.topic().equals("a")));
+
+        Set<TopicPartition> allAssigned = new HashSet<>();
+        assignment.values().forEach(allAssigned::addAll);
+        assertEquals(weights.keySet(), allAssigned, "every partition must be assigned exactly once");
+    }
+
+    @Test
+    void failsWhenNoMemberSubscribesToAPartitionsTopic() {
+        Map<String, Set<String>> subscribedTopics = Map.of("c0", Set.of("a"));
+        Map<TopicPartition, Double> weights = Map.of(new TopicPartition("b", 0), 1.0);
+
+        assertThrows(IllegalStateException.class,
+                () -> loadAware.computeOptimalAssignment(subscribedTopics, weights));
+    }
+
+    @Test
+    void returnsEmptyListsForAllMembersWhenThereAreNoPartitions() {
+        Map<String, List<TopicPartition>> assignment = loadAware.computeOptimalAssignment(
+                Map.of("c0", Set.of("a"), "c1", Set.of("a")), Map.of());
+
+        assertEquals(Map.of("c0", List.of(), "c1", List.of()), assignment);
+    }
+
+    @Test
+    void failsWithoutMembers() {
+        assertThrows(IllegalArgumentException.class,
+                () -> loadAware.computeOptimalAssignment(Map.of(), Map.of()));
+    }
+
+    private static Map<String, Set<String>> homogeneous(Set<String> members, String topic) {
+        Map<String, Set<String>> subscribedTopics = new HashMap<>();
+        for (String member : members) {
+            subscribedTopics.put(member, Set.of(topic));
+        }
+        return subscribedTopics;
     }
 
     private static double maxMemberLoad(

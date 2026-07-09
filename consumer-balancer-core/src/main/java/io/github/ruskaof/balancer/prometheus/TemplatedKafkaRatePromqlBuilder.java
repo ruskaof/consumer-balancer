@@ -3,6 +3,11 @@ package io.github.ruskaof.balancer.prometheus;
 import java.util.Objects;
 import java.util.StringJoiner;
 
+/**
+ * Builds PromQL from a template in which every literal {@code %s} is replaced with the
+ * {@code |}-separated, regex-escaped topic list. Other {@code %} characters in the
+ * template are left untouched.
+ */
 public class TemplatedKafkaRatePromqlBuilder extends KafkaRatePromqlBuilder {
 
     private final String template;
@@ -25,7 +30,7 @@ public class TemplatedKafkaRatePromqlBuilder extends KafkaRatePromqlBuilder {
         for (String topic : topics) {
             topicsListRegex.add(escapeTopicForRegex(topic));
         }
-        return String.format(template, topicsListRegex);
+        return template.replace("%s", topicsListRegex.toString());
     }
 
     private static String escapeTopicForRegex(String topic) {
