@@ -21,7 +21,8 @@ public class DefaultKafkaRatePromqlBuilderAutoConfiguration {
                     "consumer-balancer.prometheus.weight-query-template is required when using the default "
                             + "Prometheus weight store. It must contain the placeholder "
                             + "%s"
-                            + " (see README for examples).");
+                            + " (see README for examples). Alternatively, define a WeightService bean or "
+                            + "disable the balancer with consumer-balancer.enabled=false.");
         }
         return new TemplatedKafkaRatePromqlBuilder(template);
     }

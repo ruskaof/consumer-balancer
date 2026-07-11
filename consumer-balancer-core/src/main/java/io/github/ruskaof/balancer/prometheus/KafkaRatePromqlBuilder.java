@@ -4,6 +4,13 @@ import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
+/**
+ * Builds the PromQL query used to load per-partition weights.
+ *
+ * <p>The builder holds mutable state ({@link #setTopics(List)}); callers that may run
+ * concurrently — e.g. the assignor and a rebalance trigger sharing one instance — must use
+ * {@link #build(List)}, which synchronizes the set-and-build sequence.
+ */
 public abstract class KafkaRatePromqlBuilder {
     protected List<String> topics;
 
@@ -19,6 +26,14 @@ public abstract class KafkaRatePromqlBuilder {
         this.topics = topics;
 
         return this;
+    }
+
+    /**
+     * Builds the query for the given topics in one thread-safe step.
+     */
+    public final synchronized String build(List<String> topics) {
+        setTopics(topics);
+        return build();
     }
 
     public abstract String build();

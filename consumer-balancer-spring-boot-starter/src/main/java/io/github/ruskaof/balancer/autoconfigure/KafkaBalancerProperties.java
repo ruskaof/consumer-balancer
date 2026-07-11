@@ -81,6 +81,13 @@ public class KafkaBalancerProperties {
          * Empty for plain Prometheus.
          */
         private String pathPrefix = "";
+
+        /**
+         * Optional value for the {@code Authorization} header sent with every query,
+         * e.g. {@code Bearer <token>} or {@code Basic <base64>}. Empty means no header.
+         */
+        private String authorization;
+
         private Duration connectTimeout = Duration.ofSeconds(10);
         private Duration requestTimeout = Duration.ofSeconds(30);
 
@@ -122,6 +129,14 @@ public class KafkaBalancerProperties {
 
         public void setPathPrefix(String pathPrefix) {
             this.pathPrefix = pathPrefix;
+        }
+
+        public String getAuthorization() {
+            return authorization;
+        }
+
+        public void setAuthorization(String authorization) {
+            this.authorization = authorization;
         }
 
         public Duration getConnectTimeout() {

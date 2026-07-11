@@ -5,14 +5,11 @@ import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.prometheus.PrometheusObjectMappers;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.json.JsonMapper;
 
 @AutoConfiguration(after = {
         DefaultKafkaRatePromqlBuilderAutoConfiguration.class
@@ -23,16 +20,13 @@ import tools.jackson.databind.json.JsonMapper;
 public class PrometheusWeightAutoConfiguration {
 
     @Bean
-    public PrometheusClient prometheusClient(
-            KafkaBalancerProperties kafkaBalancerProperties,
-            ObjectProvider<JsonMapper> objectMapperProvider) {
-        ObjectMapper mapper = objectMapperProvider.getIfAvailable();
-        if (mapper == null) {
-            mapper = PrometheusObjectMappers.create();
-        }
+    public PrometheusClient prometheusClient(KafkaBalancerProperties kafkaBalancerProperties) {
+        // Always uses the library's own mapper: the Prometheus wire format is fixed, so
+        // application-level Jackson customizations (naming strategies, strict unknown
+        // properties, modules) must not affect how responses are parsed.
         return new PrometheusClient(
                 PrometheusConnectionSettingsFactory.from(kafkaBalancerProperties),
-                mapper);
+                PrometheusObjectMappers.create());
     }
 
     @Bean

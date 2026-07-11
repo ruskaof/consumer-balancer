@@ -3,15 +3,14 @@ plugins {
     id "com.vanniktech.maven.publish" version "0.36.0"
 }
 
-version = project.findProperty("version")
-group = project.findProperty("group")
-
 // Published module: no BOM/platform here — every dependency carries an explicit
 // version so the released POM is self-contained and imposes no constraints on consumers.
 dependencies {
     api libs.kafka.clients
+    // Compile scope in the POM: ObjectMapper appears in the public API
+    // (PrometheusClient's constructor, PrometheusObjectMappers.create()).
+    api libs.jackson.databind
     implementation libs.slf4j.api
-    implementation libs.jackson.databind
     testRuntimeOnly libs.logback.classic
     testRuntimeOnly libs.junit.platform.launcher
 }
@@ -28,7 +27,7 @@ mavenPublishing {
       license {
         name = "The Apache License, Version 2.0"
         url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
-        distribution = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        distribution = "repo"
       }
     }
     developers {

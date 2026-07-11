@@ -2,6 +2,13 @@ package io.github.ruskaof.balancer.trigger;
 
 import java.util.List;
 
+/**
+ * Combines triggers with {@link Mode#ALL} (every trigger must fire) or {@link Mode#ANY}
+ * (at least one must fire).
+ *
+ * <p>Every trigger is evaluated on every check — there is no short-circuiting — so
+ * stateful triggers such as {@link PeriodicTrigger} observe each evaluation cycle.
+ */
 public class CompositeTrigger implements RebalanceTrigger {
 
     public enum Mode {
@@ -21,9 +28,16 @@ public class CompositeTrigger implements RebalanceTrigger {
 
     @Override
     public boolean shouldTrigger() {
+        boolean all = true;
+        boolean any = false;
+        for (RebalanceTrigger trigger : triggers) {
+            boolean fired = trigger.shouldTrigger();
+            all &= fired;
+            any |= fired;
+        }
         return switch (mode) {
-            case ALL -> triggers.stream().allMatch(RebalanceTrigger::shouldTrigger);
-            case ANY -> triggers.stream().anyMatch(RebalanceTrigger::shouldTrigger);
+            case ALL -> all;
+            case ANY -> any;
         };
     }
 }

@@ -25,6 +25,20 @@ class TemplatedKafkaRatePromqlBuilderTest {
     }
 
     @Test
+    void keepsLiteralPercentCharactersInTemplate() {
+        var b = new TemplatedKafkaRatePromqlBuilder(
+                "sum(rate(m{topic=~\"%s\",instance=~\"host-50%\"}[1m]))");
+        String q = b.build(java.util.List.of("a"));
+        assertEquals("sum(rate(m{topic=~\"a\",instance=~\"host-50%\"}[1m]))", q);
+    }
+
+    @Test
+    void buildWithTopicsArgumentIsASingleStep() {
+        var b = new TemplatedKafkaRatePromqlBuilder("x{topic=~\"%s\"}");
+        assertEquals("x{topic=~\"a|b\"}", b.build(java.util.List.of("a", "b")));
+    }
+
+    @Test
     void rejectsMissingPlaceholder() {
         assertThrows(IllegalArgumentException.class, () -> new TemplatedKafkaRatePromqlBuilder("up"));
     }

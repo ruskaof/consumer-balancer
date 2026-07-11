@@ -6,6 +6,7 @@ import io.github.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.prometheus.PrometheusConnectionSettings;
 import io.github.ruskaof.balancer.prometheus.PrometheusObjectMappers;
+import io.github.ruskaof.balancer.weight.PartitionWeightDefaults;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.NoArgsConstructor;
@@ -62,10 +63,41 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             Map<String, Integer> partitionsPerTopic,
             Map<String, Subscription> subscriptions) {
 
-        var weights = weightService.computeWeights(getAllPartitions(partitionsPerTopic));
-        var members = subscriptions.keySet();
+        Set<TopicPartition> allPartitions = getAllPartitions(partitionsPerTopic);
+        Map<TopicPartition, Double> weights = sanitizedWeights(
+                allPartitions, weightService.computeWeights(allPartitions));
 
-        return balanceService.computeOptimalAssignment(members, weights);
+        Map<String, Set<String>> subscribedTopicsByMember = new HashMap<>();
+        subscriptions.forEach((member, subscription) ->
+                subscribedTopicsByMember.put(member, Set.copyOf(subscription.topics())));
+
+        return balanceService.computeOptimalAssignment(subscribedTopicsByMember, weights);
+    }
+
+    /**
+     * Restricts weights to the partitions being assigned so the assignment covers exactly
+     * {@code allPartitions}: entries the weight service did not return (or returned as
+     * {@code null}/non-finite) fall back to {@link PartitionWeightDefaults#MISSING}, and
+     * entries for other partitions (e.g. stale Prometheus series) are dropped.
+     */
+    private static Map<TopicPartition, Double> sanitizedWeights(
+            Set<TopicPartition> allPartitions,
+            Map<TopicPartition, Double> rawWeights) {
+        Map<TopicPartition, Double> weights = new HashMap<>();
+        int defaulted = 0;
+        for (TopicPartition tp : allPartitions) {
+            Double weight = rawWeights == null ? null : rawWeights.get(tp);
+            if (weight == null || !Double.isFinite(weight)) {
+                weight = PartitionWeightDefaults.MISSING;
+                defaulted++;
+            }
+            weights.put(tp, weight);
+        }
+        if (defaulted > 0) {
+            log.warn("{} of {} partitions had no usable weight; using default weight {}",
+                    defaulted, allPartitions.size(), PartitionWeightDefaults.MISSING);
+        }
+        return weights;
     }
 
     private static Set<TopicPartition> getAllPartitions(Map<String, Integer> partitionsPerTopic) {
@@ -159,6 +191,11 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
          * VictoriaMetrics cluster. Default: empty (plain Prometheus).
          */
         public static final String PROMETHEUS_PATH_PREFIX = "assignor.load-aware.prometheus.path-prefix";
+        /**
+         * Optional value for the {@code Authorization} header sent with every query,
+         * e.g. {@code Bearer <token>} or {@code Basic <base64>}. Default: no header.
+         */
+        public static final String PROMETHEUS_AUTHORIZATION = "assignor.load-aware.prometheus.authorization";
         public static final String PROMETHEUS_CONNECT_TIMEOUT_MS = "assignor.load-aware.prometheus.connect-timeout-ms";
         public static final String PROMETHEUS_REQUEST_TIMEOUT_MS = "assignor.load-aware.prometheus.request-timeout-ms";
         /**
@@ -188,12 +225,9 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                 throw new IllegalArgumentException(
                         "Invalid port value for load-aware assignor: " + portObj, e);
             }
-            String scheme = configs.containsKey(PROMETHEUS_SCHEME)
-                    ? configs.get(PROMETHEUS_SCHEME).toString()
-                    : "http";
-            String pathPrefix = configs.containsKey(PROMETHEUS_PATH_PREFIX)
-                    ? configs.get(PROMETHEUS_PATH_PREFIX).toString()
-                    : "";
+            String scheme = stringConfig(configs, PROMETHEUS_SCHEME, "http");
+            String pathPrefix = stringConfig(configs, PROMETHEUS_PATH_PREFIX, "");
+            String authorization = stringConfig(configs, PROMETHEUS_AUTHORIZATION, null);
             long connectMs = parseLong(configs, PROMETHEUS_CONNECT_TIMEOUT_MS, 10_000L);
             long requestMs = parseLong(configs, PROMETHEUS_REQUEST_TIMEOUT_MS, 30_000L);
             return new PrometheusConnectionSettings(
@@ -201,15 +235,27 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                     host,
                     port,
                     pathPrefix,
+                    authorization,
                     Duration.ofMillis(connectMs),
                     Duration.ofMillis(requestMs));
         }
 
+        private static String stringConfig(Map<String, ?> configs, String key, String defaultValue) {
+            Object value = configs.get(key);
+            return value == null ? defaultValue : value.toString();
+        }
+
         private static long parseLong(Map<String, ?> configs, String key, long defaultValue) {
-            if (!configs.containsKey(key) || configs.get(key) == null) {
+            Object value = configs.get(key);
+            if (value == null) {
                 return defaultValue;
             }
-            return Long.parseLong(configs.get(key).toString());
+            try {
+                return Long.parseLong(value.toString());
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(
+                        "Invalid value for " + key + ": " + value, e);
+            }
         }
     }
 

@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 @Slf4j
-public class PrometheusClient {
+public class PrometheusClient implements AutoCloseable {
 
     private final HttpClient httpClient;
     private final PrometheusConnectionSettings settings;
@@ -32,12 +32,14 @@ public class PrometheusClient {
         Objects.requireNonNull(promql, "promql");
         URI uri = buildUri(settings, promql);
 
-        HttpRequest request = HttpRequest.newBuilder(uri)
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(uri)
                 .GET()
-                .timeout(settings.requestTimeout())
-                .build();
+                .timeout(settings.requestTimeout());
+        if (settings.authorizationHeader() != null) {
+            requestBuilder.header("Authorization", settings.authorizationHeader());
+        }
 
-        HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        HttpResponse<byte[]> response = httpClient.send(requestBuilder.build(), HttpResponse.BodyHandlers.ofByteArray());
         int code = response.statusCode();
         if (code < 200 || code >= 300) {
             String body = response.body() != null && response.body().length > 0
@@ -47,7 +49,19 @@ public class PrometheusClient {
                     "Prometheus query failed: HTTP " + code + " body=" + truncate(body, 512) + " uri=" + uri);
         }
 
-        return objectMapper.readValue(response.body(), PromqlResponse.class);
+        PromqlResponse parsed = objectMapper.readValue(response.body(), PromqlResponse.class);
+        if (!"success".equals(parsed.getStatus())) {
+            throw new IOException("Prometheus query returned status '" + parsed.getStatus() + "'"
+                    + (parsed.getErrorType() != null ? " errorType=" + parsed.getErrorType() : "")
+                    + (parsed.getError() != null ? " error=" + parsed.getError() : "")
+                    + " uri=" + uri);
+        }
+        return parsed;
+    }
+
+    @Override
+    public void close() {
+        httpClient.close();
     }
 
     private static URI buildUri(PrometheusConnectionSettings settings, String promql) throws IOException {

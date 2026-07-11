@@ -2,6 +2,13 @@ package io.github.ruskaof.balancer.trigger;
 
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Fires on the first check after construction and then at most once per interval.
+ *
+ * <p>A firing consumes the interval: inside a {@link CompositeTrigger} with
+ * {@link CompositeTrigger.Mode#ALL}, a period consumed while another trigger vetoes the
+ * composite is lost, and the composite cannot fire again before the next interval.
+ */
 public class PeriodicTrigger implements RebalanceTrigger {
     private final long intervalMs;
     private final AtomicLong lastTriggerTime = new AtomicLong(0);

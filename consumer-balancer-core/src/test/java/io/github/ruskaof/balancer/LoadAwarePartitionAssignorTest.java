@@ -14,13 +14,14 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Verifies that the assignor delegates to {@link BalanceService} using the same
- * greedy placement
- * as {@link SortingRoundRobinBalanceService} when weights are supplied.
+ * Verifies that the assignor delegates to {@link BalanceService} with a sanitized weight
+ * map covering exactly the partitions being assigned, and with each member's subscribed
+ * topics.
  */
 class LoadAwarePartitionAssignorTest {
 
@@ -43,10 +44,9 @@ class LoadAwarePartitionAssignorTest {
 
         String topic = "t";
         Map<String, Integer> partitionsPerTopic = Map.of(topic, 3);
-        Map<String, Subscription> subscriptions = new TreeMap<>();
-        ByteBuffer userData = ByteBuffer.allocate(0);
-        subscriptions.put("a", new Subscription(List.of(topic), userData));
-        subscriptions.put("b", new Subscription(List.of(topic), userData));
+        Map<String, Subscription> subscriptions = subscriptions(Map.of(
+                "a", List.of(topic),
+                "b", List.of(topic)));
 
         Map<String, List<TopicPartition>> assignment = assignor.assign(partitionsPerTopic, subscriptions);
 
@@ -54,9 +54,98 @@ class LoadAwarePartitionAssignorTest {
                 new TopicPartition(topic, 0),
                 new TopicPartition(topic, 1),
                 new TopicPartition(topic, 2)));
-        Map<String, List<TopicPartition>> expected = balance.computeOptimalAssignment(subscriptions.keySet(), w);
+        Map<String, List<TopicPartition>> expected = balance.computeOptimalAssignment(
+                Map.of("a", Set.of(topic), "b", Set.of(topic)), w);
 
         assertEquals(expected, assignment);
+    }
+
+    @Test
+    void assignsPartitionsOnlyToSubscribedMembers() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        AtomicReference<Map<String, Set<String>>> capturedMembers = new AtomicReference<>();
+        BalanceService capturingBalance = (members, weights) -> {
+            capturedMembers.set(members);
+            return new SortingRoundRobinBalanceService().computeOptimalAssignment(members, weights);
+        };
+
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
+
+        Map<String, Integer> partitionsPerTopic = Map.of("t1", 1, "t2", 2);
+        Map<String, Subscription> subscriptions = subscriptions(Map.of(
+                "a", List.of("t1"),
+                "b", List.of("t1", "t2")));
+
+        Map<String, List<TopicPartition>> assignment = assignor.assign(partitionsPerTopic, subscriptions);
+
+        assertEquals(Map.of("a", Set.of("t1"), "b", Set.of("t1", "t2")), capturedMembers.get(),
+                "load-aware path must run and receive each member's subscribed topics");
+        assertTrue(assignment.get("a").stream().allMatch(tp -> tp.topic().equals("t1")),
+                "member 'a' did not subscribe to t2 but was assigned: " + assignment.get("a"));
+        Set<TopicPartition> allAssigned = new HashSet<>();
+        assignment.values().forEach(allAssigned::addAll);
+        assertEquals(Set.of(
+                new TopicPartition("t1", 0),
+                new TopicPartition("t2", 0),
+                new TopicPartition("t2", 1)), allAssigned);
+    }
+
+    @Test
+    void backfillsDefaultWeightsWhenWeightServiceReturnsSubset() {
+        AtomicReference<Map<TopicPartition, Double>> capturedWeights = new AtomicReference<>();
+        LoadAwarePartitionAssignor assignor = configureCapturing(
+                partitions -> Map.of(), capturedWeights);
+
+        Map<String, List<TopicPartition>> assignment = assignor.assign(
+                Map.of("t", 3), subscriptions(Map.of("a", List.of("t"))));
+
+        assertEquals(
+                Map.of(
+                        new TopicPartition("t", 0), 1.0,
+                        new TopicPartition("t", 1), 1.0,
+                        new TopicPartition("t", 2), 1.0),
+                capturedWeights.get(),
+                "missing weights must be backfilled with the default");
+        assertEquals(3, assignment.get("a").size(), "every partition must be assigned");
+    }
+
+    @Test
+    void dropsWeightEntriesForPartitionsNotBeingAssigned() {
+        AtomicReference<Map<TopicPartition, Double>> capturedWeights = new AtomicReference<>();
+        LoadAwarePartitionAssignor assignor = configureCapturing(
+                partitions -> Map.of(new TopicPartition("t", 99), 100.0), capturedWeights);
+
+        Map<String, List<TopicPartition>> assignment = assignor.assign(
+                Map.of("t", 2), subscriptions(Map.of("a", List.of("t"))));
+
+        assertEquals(
+                Set.of(new TopicPartition("t", 0), new TopicPartition("t", 1)),
+                capturedWeights.get().keySet(),
+                "stale weight entries must not enter the assignment");
+        assertFalse(assignment.get("a").contains(new TopicPartition("t", 99)));
+    }
+
+    @Test
+    void sanitizesNonFiniteWeightsBeforeBalancing() {
+        AtomicReference<Map<TopicPartition, Double>> capturedWeights = new AtomicReference<>();
+        LoadAwarePartitionAssignor assignor = configureCapturing(
+                partitions -> Map.of(
+                        new TopicPartition("t", 0), Double.NaN,
+                        new TopicPartition("t", 1), Double.POSITIVE_INFINITY,
+                        new TopicPartition("t", 2), 3.0),
+                capturedWeights);
+
+        assignor.assign(Map.of("t", 3), subscriptions(Map.of("a", List.of("t"))));
+
+        assertEquals(
+                Map.of(
+                        new TopicPartition("t", 0), 1.0,
+                        new TopicPartition("t", 1), 1.0,
+                        new TopicPartition("t", 2), 3.0),
+                capturedWeights.get(),
+                "non-finite weights must fall back to the default");
     }
 
     @Test
@@ -81,6 +170,20 @@ class LoadAwarePartitionAssignorTest {
                 () -> assignor.configure(Map.of()));
 
         assertTrue(e.getMessage().contains(LoadAwareAssignorConfig.PROMETHEUS_HOST));
+    }
+
+    @Test
+    void configureFailsWithClearMessageOnInvalidTimeout() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> assignor.configure(Map.of(
+                        LoadAwareAssignorConfig.PROMETHEUS_HOST, "localhost",
+                        LoadAwareAssignorConfig.PROMETHEUS_PORT, "9090",
+                        LoadAwareAssignorConfig.PROMETHEUS_CONNECT_TIMEOUT_MS, "abc",
+                        LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE, "x{topic=~\"%s\"}")));
+
+        assertTrue(e.getMessage().contains(LoadAwareAssignorConfig.PROMETHEUS_CONNECT_TIMEOUT_MS));
     }
 
     @Test
@@ -111,6 +214,28 @@ class LoadAwarePartitionAssignorTest {
         assertDoesNotThrow(() -> assignor.onAssignment(
                 new Assignment(List.of()),
                 new ConsumerGroupMetadata("g", 1, "m-1", Optional.empty())));
+    }
+
+    private static LoadAwarePartitionAssignor configureCapturing(
+            WeightService weightService,
+            AtomicReference<Map<TopicPartition, Double>> capturedWeights) {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        BalanceService capturingBalance = (members, weights) -> {
+            capturedWeights.set(weights);
+            return new SortingRoundRobinBalanceService().computeOptimalAssignment(members, weights);
+        };
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService,
+                LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
+        return assignor;
+    }
+
+    private static Map<String, Subscription> subscriptions(Map<String, List<String>> topicsByMember) {
+        Map<String, Subscription> subscriptions = new TreeMap<>();
+        ByteBuffer userData = ByteBuffer.allocate(0);
+        topicsByMember.forEach((member, topics) ->
+                subscriptions.put(member, new Subscription(topics, userData)));
+        return subscriptions;
     }
 
     private static Object getField(Object target, String name) throws Exception {

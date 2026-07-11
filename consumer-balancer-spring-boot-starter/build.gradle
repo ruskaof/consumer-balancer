@@ -3,18 +3,18 @@ plugins {
     id "com.vanniktech.maven.publish" version "0.36.0"
 }
 
-version = project.findProperty("version")
-group = project.findProperty("group")
-
 // Published module: no BOM/platform here — every dependency carries an explicit
 // version so the released POM is self-contained and imposes no constraints on consumers.
 dependencies {
     api project(':consumer-balancer-core')
+    // Compile scope in the POM: public classes implement/expose spring-boot-kafka and
+    // spring-kafka types (DefaultKafkaConsumerFactoryCustomizer, KafkaListenerEndpointRegistry).
+    api libs.spring.boot.kafka
+    api libs.spring.kafka
     implementation libs.spring.boot.autoconfigure
-    implementation libs.spring.boot.kafka
-    implementation libs.spring.kafka
     implementation libs.slf4j.api
     implementation libs.jackson.databind
+    annotationProcessor libs.spring.boot.configuration.processor
     testImplementation libs.spring.boot.starter.test
     testRuntimeOnly libs.junit.platform.launcher
 }
@@ -31,7 +31,7 @@ mavenPublishing {
       license {
         name = "The Apache License, Version 2.0"
         url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
-        distribution = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        distribution = "repo"
       }
     }
     developers {
