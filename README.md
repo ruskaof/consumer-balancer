@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:4.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:4.1.0")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:4.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:4.1.0")
 }
 ```
 
@@ -83,7 +83,9 @@ If you define your own `ConsumerFactory` bean, Boot's factory customizers do not
 | `consumer-balancer.enabled` | `true` | Master switch for balancer auto-configuration. |
 | `consumer-balancer.proactive-rebalance-enabled` | `true` | When `true`, one elected consumer runs the threshold trigger and may call `enforceRebalance()` on listener containers. |
 | `consumer-balancer.rebalance-load-imbalance-threshold` | `1.1` | Proactive rebalance when `(max member load) / (optimal max load) > threshold` (see `ThresholdTrigger`). |
-| `consumer-balancer.prometheus.weight-query-template` | — | **Required** when using the default `PrometheusWeightService`: PromQL with `%s`. Series must include `topic` and `partition` labels. |
+| `consumer-balancer.prometheus.weight-query-template` | — | **Required** when using the default `PrometheusWeightService`: PromQL with `%s`. Series must include the topic and partition labels (see below). |
+| `consumer-balancer.prometheus.topic-label` | `topic` | Label on the weight-query series that carries the topic name. |
+| `consumer-balancer.prometheus.partition-label` | `partition` | Label on the weight-query series that carries the partition number. |
 | `consumer-balancer.prometheus.scheme` | `http` | Prometheus URL scheme. |
 | `consumer-balancer.prometheus.host` | `localhost` | Prometheus host. |
 | `consumer-balancer.prometheus.port` | `9090` | Prometheus port. |
@@ -105,6 +107,8 @@ If you define your own `ConsumerFactory` bean, Boot's factory customizers do not
 Prometheus keys, required **only** when `assignor.load-aware.weight-service` is not set (the Spring Boot starter covers this case by injecting the `WeightService` bean instead):
 
 - `assignor.load-aware.prometheus.weight-query-template`
+- `assignor.load-aware.prometheus.topic-label` (default: `topic`)
+- `assignor.load-aware.prometheus.partition-label` (default: `partition`)
 - `assignor.load-aware.prometheus.host`
 - `assignor.load-aware.prometheus.port`
 - `assignor.load-aware.prometheus.scheme`
@@ -145,7 +149,7 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 
 ## Operations
 
-- Your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
+- Your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. If your metrics use different label names (e.g. `kafka_topic`), set `consumer-balancer.prometheus.topic-label` / `partition-label` accordingly — remember the `by (...)` clause of the query must keep those labels. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
 - Partitions are assigned only to members subscribed to their topic, so groups whose members subscribe to different topic sets are handled correctly.
 - Proactive rebalance requires a group id in `spring.kafka.consumer.group-id`; only the listener containers of that group receive `enforceRebalance()`.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.

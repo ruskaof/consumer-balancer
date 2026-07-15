@@ -21,7 +21,10 @@ class TemplatedKafkaRatePromqlBuilderTest {
         var b = new TemplatedKafkaRatePromqlBuilder(
                 "x{topic=~\"%s\"}y");
         String q = b.setTopics(java.util.List.of("foo.bar", "baz")).build();
-        assertEquals("x{topic=~\"foo\\.bar|baz\"}y", q);
+        // The escape needs two backslashes in the query text: PromQL's string parser
+        // consumes one level (and rejects a lone \. as an unknown escape sequence),
+        // leaving \. for the regex engine.
+        assertEquals("x{topic=~\"foo\\\\.bar|baz\"}y", q);
     }
 
     @Test

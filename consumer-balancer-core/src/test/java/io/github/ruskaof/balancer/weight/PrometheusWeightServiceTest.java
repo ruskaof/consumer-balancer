@@ -82,6 +82,46 @@ class PrometheusWeightServiceTest {
     }
 
     @Test
+    void readsCustomTopicAndPartitionLabelNames() {
+        PrometheusWeightService service = new PrometheusWeightService(
+                new TemplatedKafkaRatePromqlBuilder("x{kafka_topic=~\"%s\"}"),
+                stubClient(response(new PrometheusDataResult(
+                        Map.of("kafka_topic", "t", "kafka_partition", "0"),
+                        new InstantValue(0, "2.5")))),
+                "kafka_topic",
+                "kafka_partition");
+
+        Map<TopicPartition, Double> weights = service.computeWeights(Set.of(T0));
+
+        assertEquals(Map.of(T0, 2.5), weights);
+    }
+
+    @Test
+    void missingLabelErrorNamesTheConfiguredLabels() {
+        PrometheusWeightService service = new PrometheusWeightService(
+                new TemplatedKafkaRatePromqlBuilder("x{kafka_topic=~\"%s\"}"),
+                stubClient(response(series("t", "0", "2.5"))),
+                "kafka_topic",
+                "kafka_partition");
+
+        IllegalStateException e = assertThrows(IllegalStateException.class,
+                () -> service.computeWeights(Set.of(T0)));
+
+        assertTrue(e.getMessage().contains("sum by (kafka_topic, kafka_partition)"),
+                "message should name the configured labels, was: " + e.getMessage());
+    }
+
+    @Test
+    void rejectsBlankLabelNames() {
+        assertThrows(IllegalArgumentException.class, () -> new PrometheusWeightService(
+                new TemplatedKafkaRatePromqlBuilder("x{topic=~\"%s\"}"),
+                stubClient(response()), " ", "partition"));
+        assertThrows(IllegalArgumentException.class, () -> new PrometheusWeightService(
+                new TemplatedKafkaRatePromqlBuilder("x{topic=~\"%s\"}"),
+                stubClient(response()), "topic", null));
+    }
+
+    @Test
     void defaultsEverythingWhenResponseHasNoData() {
         PrometheusWeightService service = service(new PromqlResponse("success", null, null, null));
 
