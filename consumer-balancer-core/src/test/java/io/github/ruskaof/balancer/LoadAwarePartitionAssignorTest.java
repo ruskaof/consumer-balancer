@@ -160,6 +160,27 @@ class LoadAwarePartitionAssignorTest {
 
         assertInstanceOf(PrometheusWeightService.class, getField(assignor, "weightService"));
         assertInstanceOf(SortingRoundRobinBalanceService.class, getField(assignor, "balanceService"));
+
+        PrometheusWeightService weightService = (PrometheusWeightService) getField(assignor, "weightService");
+        assertEquals("topic", weightService.getTopicLabel());
+        assertEquals("partition", weightService.getPartitionLabel());
+    }
+
+    @Test
+    void configurePassesCustomTopicAndPartitionLabelsToPrometheusDefaults() throws Exception {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.PROMETHEUS_HOST, "localhost",
+                LoadAwareAssignorConfig.PROMETHEUS_PORT, "9090",
+                LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE,
+                "sum(rate(kafka_messages_total{kafka_topic=~\"%s\"}[1m])) by (kafka_topic, kafka_partition)",
+                LoadAwareAssignorConfig.PROMETHEUS_TOPIC_LABEL, "kafka_topic",
+                LoadAwareAssignorConfig.PROMETHEUS_PARTITION_LABEL, "kafka_partition"));
+
+        PrometheusWeightService weightService = (PrometheusWeightService) getField(assignor, "weightService");
+        assertEquals("kafka_topic", weightService.getTopicLabel());
+        assertEquals("kafka_partition", weightService.getPartitionLabel());
     }
 
     @Test

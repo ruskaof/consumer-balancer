@@ -32,7 +32,12 @@ public class PrometheusWeightAutoConfiguration {
     @Bean
     public WeightService prometheusWeightService(
             KafkaRatePromqlBuilder kafkaRatePromqlBuilder,
-            PrometheusClient prometheusClient) {
-        return new PrometheusWeightService(kafkaRatePromqlBuilder, prometheusClient);
+            PrometheusClient prometheusClient,
+            KafkaBalancerProperties kafkaBalancerProperties) {
+        return new PrometheusWeightService(
+                kafkaRatePromqlBuilder,
+                prometheusClient,
+                kafkaBalancerProperties.getPrometheus().getTopicLabel(),
+                kafkaBalancerProperties.getPrometheus().getPartitionLabel());
     }
 }

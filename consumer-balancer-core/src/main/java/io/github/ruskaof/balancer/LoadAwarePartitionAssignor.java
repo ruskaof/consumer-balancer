@@ -157,7 +157,15 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                         + "(must contain %s; not required when assignor.load-aware.weight-service is set)");
         return new PrometheusWeightService(
                 new TemplatedKafkaRatePromqlBuilder(weightQueryTemplate),
-                prometheusClient);
+                prometheusClient,
+                LoadAwareAssignorConfig.stringConfig(
+                        configs,
+                        LoadAwareAssignorConfig.PROMETHEUS_TOPIC_LABEL,
+                        PrometheusWeightService.DEFAULT_TOPIC_LABEL),
+                LoadAwareAssignorConfig.stringConfig(
+                        configs,
+                        LoadAwareAssignorConfig.PROMETHEUS_PARTITION_LABEL,
+                        PrometheusWeightService.DEFAULT_PARTITION_LABEL));
     }
 
     public static class LoadAwareAssignorConfig {
@@ -202,6 +210,16 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
          * PromQL template with placeholder {@code %s} for topic regex (required).
          */
         public static final String PROMETHEUS_WEIGHT_QUERY_TEMPLATE = "assignor.load-aware.prometheus.weight-query-template";
+        /**
+         * Label on the weight-query series that carries the topic name.
+         * Default: {@code topic}.
+         */
+        public static final String PROMETHEUS_TOPIC_LABEL = "assignor.load-aware.prometheus.topic-label";
+        /**
+         * Label on the weight-query series that carries the partition number.
+         * Default: {@code partition}.
+         */
+        public static final String PROMETHEUS_PARTITION_LABEL = "assignor.load-aware.prometheus.partition-label";
 
         public static PrometheusConnectionSettings connectionSettingsFrom(Map<String, ?> configs) {
             Object hostObj = configs.get(PROMETHEUS_HOST);

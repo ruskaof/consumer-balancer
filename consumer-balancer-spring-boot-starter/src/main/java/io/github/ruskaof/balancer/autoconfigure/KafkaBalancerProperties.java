@@ -65,10 +65,20 @@ public class KafkaBalancerProperties {
          * {@link io.github.ruskaof.balancer.weight.PrometheusWeightService}:
          * PromQL template with placeholder {@code %s} where the topic regex list is
          * inserted.
-         * Results must include {@code topic} and {@code partition} labels on each
-         * series.
+         * Results must include the topic and partition labels (see
+         * {@code topic-label} and {@code partition-label}) on each series.
          */
         private String weightQueryTemplate;
+
+        /**
+         * Label on the weight-query series that carries the topic name.
+         */
+        private String topicLabel = "topic";
+
+        /**
+         * Label on the weight-query series that carries the partition number.
+         */
+        private String partitionLabel = "partition";
 
         private String host = "localhost";
         private int port = 9090;
@@ -97,6 +107,22 @@ public class KafkaBalancerProperties {
 
         public void setWeightQueryTemplate(String weightQueryTemplate) {
             this.weightQueryTemplate = weightQueryTemplate;
+        }
+
+        public String getTopicLabel() {
+            return topicLabel;
+        }
+
+        public void setTopicLabel(String topicLabel) {
+            this.topicLabel = topicLabel;
+        }
+
+        public String getPartitionLabel() {
+            return partitionLabel;
+        }
+
+        public void setPartitionLabel(String partitionLabel) {
+            this.partitionLabel = partitionLabel;
         }
 
         public String getHost() {
