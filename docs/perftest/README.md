@@ -22,9 +22,10 @@ near saturation and becomes the group's bottleneck — the first to build lag an
 the first to blow its latency budget — while consumers holding cold partitions
 waste capacity.
 
-The load-aware assignor instead pulls a per-partition throughput weight from
-Prometheus and assigns partitions so that the **total weight per consumer** is
-even. When the load distribution drifts, it
+The load-aware assignor instead weighs each partition by its measured
+throughput (by default, end-offset rates tracked through the Kafka AdminClient)
+and assigns partitions so that the **total weight per consumer** is even. When
+the load distribution drifts, it
 [proactively rebalances](../triggers/README.md) to restore balance.
 
 ---
@@ -94,7 +95,6 @@ throughput. Even distribution matters because:
 
 To be fair: if your per-partition load is roughly **uniform**, the built-in
 assignors already balance load and this library adds little. The load-aware
-assignor also requires a Prometheus source for weights and pays a (small)
-proactive-rebalance cost. The win is real specifically when load is **skewed**
-and uneven consumer utilisation is expensive — which, for most non-trivial
-topics, it is.
+assignor also pays a (small) weight-measurement and proactive-rebalance cost.
+The win is real specifically when load is **skewed** and uneven consumer
+utilisation is expensive — which, for most non-trivial topics, it is.

@@ -18,6 +18,16 @@ public class KafkaBalancerProperties {
      */
     private boolean proactiveRebalanceEnabled = true;
 
+    /**
+     * Built-in weight store to auto-configure when no custom WeightService bean is
+     * defined. "offset-rate" (the default) measures per-partition events/sec by
+     * tracking partition end offsets through the Kafka AdminClient and needs no
+     * extra infrastructure; "prometheus" queries a Prometheus-compatible backend
+     * and requires the consumer-balancer.prometheus.* properties.
+     */
+    private WeightStore weightStore = WeightStore.OFFSET_RATE;
+
+    private final OffsetRate offsetRate = new OffsetRate();
     private final Prometheus prometheus = new Prometheus();
     private final Coordinator coordinator = new Coordinator();
 
@@ -43,6 +53,18 @@ public class KafkaBalancerProperties {
         this.proactiveRebalanceEnabled = proactiveRebalanceEnabled;
     }
 
+    public WeightStore getWeightStore() {
+        return weightStore;
+    }
+
+    public void setWeightStore(WeightStore weightStore) {
+        this.weightStore = weightStore;
+    }
+
+    public OffsetRate getOffsetRate() {
+        return offsetRate;
+    }
+
     public Prometheus getPrometheus() {
         return prometheus;
     }
@@ -59,12 +81,51 @@ public class KafkaBalancerProperties {
         this.rebalanceLoadImbalanceThreshold = rebalanceLoadImbalanceThreshold;
     }
 
+    public enum WeightStore {
+        /**
+         * Per-partition events/sec measured from end-offset growth via the Kafka
+         * AdminClient.
+         */
+        OFFSET_RATE,
+        /**
+         * Per-partition weights queried from a Prometheus-compatible backend.
+         */
+        PROMETHEUS
+    }
+
+    public static class OffsetRate {
+        /**
+         * Window over which end-offset growth is turned into an events/sec weight.
+         */
+        private Duration rateInterval = Duration.ofMinutes(1);
+
+        /**
+         * How often partition end offsets are sampled in the background. Defaults to
+         * a quarter of rate-interval, clamped between 1 and 30 seconds.
+         */
+        private Duration sampleInterval;
+
+        public Duration getRateInterval() {
+            return rateInterval;
+        }
+
+        public void setRateInterval(Duration rateInterval) {
+            this.rateInterval = rateInterval;
+        }
+
+        public Duration getSampleInterval() {
+            return sampleInterval;
+        }
+
+        public void setSampleInterval(Duration sampleInterval) {
+            this.sampleInterval = sampleInterval;
+        }
+    }
+
     public static class Prometheus {
         /**
-         * Required when using the default
-         * {@link io.github.ruskaof.balancer.weight.PrometheusWeightService}:
-         * PromQL template with placeholder {@code %s} where the topic regex list is
-         * inserted.
+         * Required when consumer-balancer.weight-store=prometheus: PromQL template
+         * with placeholder {@code %s} where the topic regex list is inserted.
          * Results must include the topic and partition labels (see
          * {@code topic-label} and {@code partition-label}) on each series.
          */

@@ -10,7 +10,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
-import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
 
@@ -18,7 +17,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 @SpringBootTest(classes = BalancerAutoConfigurationProactiveDisabledTest.App.class, properties = "consumer-balancer.proactive-rebalance-enabled=false")
-@ActiveProfiles("test")
 class BalancerAutoConfigurationProactiveDisabledTest {
 
     @Autowired

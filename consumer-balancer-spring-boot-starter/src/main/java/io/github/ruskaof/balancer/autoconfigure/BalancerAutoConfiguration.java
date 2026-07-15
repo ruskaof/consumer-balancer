@@ -25,13 +25,24 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 @AutoConfiguration(after = {
-        DefaultKafkaRatePromqlBuilderAutoConfiguration.class,
         DefaultBalanceServiceAutoConfiguration.class,
+        KafkaOffsetRateWeightAutoConfiguration.class,
         PrometheusWeightAutoConfiguration.class
 })
 @EnableConfigurationProperties(KafkaBalancerProperties.class)
 @ConditionalOnProperty(name = "consumer-balancer.enabled", havingValue = "true", matchIfMissing = true)
 public class BalancerAutoConfiguration {
+
+    /**
+     * Shared by the default offset-rate weight store and, when proactive rebalance is
+     * enabled, coordinator election and the threshold trigger.
+     */
+    @Bean(destroyMethod = "close")
+    public AdminClient kafkaBalancerAdminClient(KafkaProperties kafkaProperties) {
+        // Full admin properties so security settings like SSL/SASL from
+        // spring.kafka.* apply to the balancer's admin client too.
+        return AdminClient.create(kafkaProperties.buildAdminProperties());
+    }
 
     /**
      * Puts the context's {@link WeightService}/{@link BalanceService} (and
@@ -67,13 +78,6 @@ public class BalancerAutoConfiguration {
                 KafkaProperties kafkaProperties) {
             String groupId = requireConsumerGroupId(kafkaProperties);
             return () -> memberIdTracker.getCurrentMemberIds(groupId);
-        }
-
-        @Bean(destroyMethod = "close")
-        public AdminClient kafkaBalancerAdminClient(KafkaProperties kafkaProperties) {
-            // Full admin properties so security settings like SSL/SASL from
-            // spring.kafka.* apply to the balancer's admin client too.
-            return AdminClient.create(kafkaProperties.buildAdminProperties());
         }
 
         @Bean

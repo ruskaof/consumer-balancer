@@ -3,7 +3,6 @@ package io.github.ruskaof.balancer.autoconfigure;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
-import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -13,23 +12,35 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
-@SpringBootTest(classes = BalancerAutoConfigurationCustomWeightTest.App.class, properties = "consumer-balancer.proactive-rebalance-enabled=false")
-class BalancerAutoConfigurationCustomWeightTest {
+/**
+ * Without any weight-store configuration the offset-rate store is the default — no
+ * Prometheus beans, no required weight-query-template — and its intervals bind from
+ * the consumer-balancer.offset-rate.* properties.
+ */
+@SpringBootTest(classes = BalancerAutoConfigurationOffsetRateDefaultTest.App.class, properties = {
+        "consumer-balancer.proactive-rebalance-enabled=false",
+        "consumer-balancer.offset-rate.rate-interval=2m",
+        "consumer-balancer.offset-rate.sample-interval=5s"
+})
+class BalancerAutoConfigurationOffsetRateDefaultTest {
 
     @Autowired
     ApplicationContext context;
 
     @Test
-    void customWeightServiceReplacesBuiltInWeightStores() {
-        assertThat(context.getBean(WeightService.class)).isNotNull();
-        assertThat(context.getBeanNamesForType(KafkaOffsetRateWeightService.class)).isEmpty();
+    void offsetRateStoreIsTheDefaultAndBindsIntervals() {
+        WeightService weightService = context.getBean(WeightService.class);
+
+        assertThat(weightService).isInstanceOf(KafkaOffsetRateWeightService.class);
+        KafkaOffsetRateWeightService offsetRateWeightService = (KafkaOffsetRateWeightService) weightService;
+        assertThat(offsetRateWeightService.getRateInterval()).isEqualTo(Duration.ofMinutes(2));
+        assertThat(offsetRateWeightService.getSampleInterval()).isEqualTo(Duration.ofSeconds(5));
         assertThat(context.getBeanNamesForType(PrometheusClient.class)).isEmpty();
     }
 
@@ -47,11 +58,6 @@ class BalancerAutoConfigurationCustomWeightTest {
         @Bean
         KafkaListenerEndpointRegistry kafkaListenerEndpointRegistry() {
             return mock(KafkaListenerEndpointRegistry.class);
-        }
-
-        @Bean
-        WeightService customWeightService() {
-            return (Set<TopicPartition> partitions) -> Map.of();
         }
     }
 }

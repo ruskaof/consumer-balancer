@@ -18,6 +18,7 @@ import static org.mockito.Mockito.mock;
 
 @SpringBootTest(classes = BalancerAutoConfigurationPrometheusLabelsTest.App.class, properties = {
         "consumer-balancer.proactive-rebalance-enabled=false",
+        "consumer-balancer.weight-store=prometheus",
         "consumer-balancer.prometheus.weight-query-template="
                 + "sum(rate(kafka_messages_total{kafka_topic=~\"%s\"}[1m])) by (kafka_topic, kafka_partition)",
         "consumer-balancer.prometheus.topic-label=kafka_topic",
@@ -29,7 +30,7 @@ class BalancerAutoConfigurationPrometheusLabelsTest {
     ApplicationContext context;
 
     @Test
-    void customLabelNamesReachTheDefaultWeightService() {
+    void customLabelNamesReachThePrometheusWeightService() {
         WeightService weightService = context.getBean(WeightService.class);
 
         assertThat(weightService).isInstanceOf(PrometheusWeightService.class);
