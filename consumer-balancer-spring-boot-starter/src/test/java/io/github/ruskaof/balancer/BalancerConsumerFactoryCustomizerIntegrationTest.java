@@ -3,7 +3,7 @@ package io.github.ruskaof.balancer;
 import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorConfig;
 import io.github.ruskaof.balancer.autoconfigure.BalancerAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration;
-import io.github.ruskaof.balancer.autoconfigure.DefaultKafkaRatePromqlBuilderAutoConfiguration;
+import io.github.ruskaof.balancer.autoconfigure.KafkaOffsetRateWeightAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.PrometheusWeightAutoConfiguration;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.weight.WeightService;
@@ -15,7 +15,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
-import org.springframework.test.context.ActiveProfiles;
 
 import java.util.Map;
 
@@ -30,7 +29,6 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.kafka.consumer.group-id=test-group",
         "consumer-balancer.proactive-rebalance-enabled=false"
 })
-@ActiveProfiles("test")
 class BalancerConsumerFactoryCustomizerIntegrationTest {
 
     @Autowired
@@ -51,8 +49,8 @@ class BalancerConsumerFactoryCustomizerIntegrationTest {
     @Configuration(proxyBeanMethods = false)
     @ImportAutoConfiguration({
             KafkaAutoConfiguration.class,
-            DefaultKafkaRatePromqlBuilderAutoConfiguration.class,
             DefaultBalanceServiceAutoConfiguration.class,
+            KafkaOffsetRateWeightAutoConfiguration.class,
             PrometheusWeightAutoConfiguration.class,
             BalancerAutoConfiguration.class
     })

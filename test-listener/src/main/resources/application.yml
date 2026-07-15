@@ -24,9 +24,9 @@ management:
         enabled: true
   endpoints.web.exposure.include: health,prometheus
 
+# The default offset-rate weight store measures per-partition events/sec through the
+# Kafka AdminClient, so no Prometheus (or kafka-exporter) is needed for weights.
 consumer-balancer:
   enabled: ${KAFKA_BALANCER_ENABLED:true}
-  prometheus:
-    weight-query-template: 'sum(rate(kafka_topic_partition_current_offset{topic=~"%s"}[1m])) by (topic, partition)'
-    host: ${PROMETHEUS_HOST:localhost}
-    port: ${PROMETHEUS_PORT:9090}
+  offset-rate:
+    rate-interval: ${OFFSET_RATE_INTERVAL:1m}

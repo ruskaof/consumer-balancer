@@ -3,7 +3,7 @@ package io.github.ruskaof.balancer;
 import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorConfig;
 import io.github.ruskaof.balancer.autoconfigure.BalancerAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration;
-import io.github.ruskaof.balancer.autoconfigure.DefaultKafkaRatePromqlBuilderAutoConfiguration;
+import io.github.ruskaof.balancer.autoconfigure.KafkaOffsetRateWeightAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.PrometheusWeightAutoConfiguration;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.junit.jupiter.api.Test;
@@ -49,8 +49,8 @@ class BalancerDisabledIntegrationTest {
     @Configuration(proxyBeanMethods = false)
     @ImportAutoConfiguration({
             KafkaAutoConfiguration.class,
-            DefaultKafkaRatePromqlBuilderAutoConfiguration.class,
             DefaultBalanceServiceAutoConfiguration.class,
+            KafkaOffsetRateWeightAutoConfiguration.class,
             PrometheusWeightAutoConfiguration.class,
             BalancerAutoConfiguration.class
     })

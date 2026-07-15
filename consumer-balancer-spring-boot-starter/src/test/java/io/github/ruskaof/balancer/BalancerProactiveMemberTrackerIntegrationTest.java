@@ -3,8 +3,7 @@ package io.github.ruskaof.balancer;
 import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorConfig;
 import io.github.ruskaof.balancer.autoconfigure.BalancerAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration;
-import io.github.ruskaof.balancer.autoconfigure.DefaultKafkaRatePromqlBuilderAutoConfiguration;
-import io.github.ruskaof.balancer.autoconfigure.PrometheusWeightAutoConfiguration;
+import io.github.ruskaof.balancer.autoconfigure.KafkaOffsetRateWeightAutoConfiguration;
 import io.github.ruskaof.balancer.trigger.CoordinatorManager;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
@@ -17,7 +16,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
-import org.springframework.test.context.ActiveProfiles;
 
 import java.util.HashMap;
 import java.util.List;
@@ -31,7 +29,6 @@ import static org.mockito.Mockito.mock;
  * so the assignor can report member ids to the coordinator election.
  */
 @SpringBootTest(classes = BalancerProactiveMemberTrackerIntegrationTest.TestApp.class)
-@ActiveProfiles("test")
 class BalancerProactiveMemberTrackerIntegrationTest {
 
     @Autowired
@@ -51,9 +48,8 @@ class BalancerProactiveMemberTrackerIntegrationTest {
 
     @Configuration(proxyBeanMethods = false)
     @ImportAutoConfiguration({
-            DefaultKafkaRatePromqlBuilderAutoConfiguration.class,
             DefaultBalanceServiceAutoConfiguration.class,
-            PrometheusWeightAutoConfiguration.class,
+            KafkaOffsetRateWeightAutoConfiguration.class,
             BalancerAutoConfiguration.class
     })
     static class TestApp {

@@ -27,10 +27,11 @@ across already-assigned partitions has drifted. Triggers fill that gap.
 
 ### `ThresholdTrigger` — the default
 
-Describes the consumer group, pulls per-partition weights from Prometheus,
-computes the *optimal* assignment via the `BalanceService`, and compares the
-**current** most-loaded member against the **optimal** most-loaded member. It
-fires when:
+Describes the consumer group, pulls per-partition weights from the configured
+weight store (by default, end-offset rates measured through the Kafka
+AdminClient), computes the *optimal* assignment via the `BalanceService`, and
+compares the **current** most-loaded member against the **optimal** most-loaded
+member. It fires when:
 
 ```
 currentMaxLoad / optimalMaxLoad > rebalanceLoadImbalanceThreshold   (default 1.1)
@@ -38,7 +39,7 @@ currentMaxLoad / optimalMaxLoad > rebalanceLoadImbalanceThreshold   (default 1.1
 
 | Pros | Cons |
 | --- | --- |
-| Proactive: reacts to load skew *before* it turns into lag or latency. | Requires Prometheus and a working weight query. |
+| Proactive: reacts to load skew *before* it turns into lag or latency. | Needs a working weight store (the default offset-rate store requires no extra infrastructure). |
 | Compares against the *best achievable* assignment, so it stays quiet when an imbalance is unavoidable (e.g. one dominant partition). | Heaviest trigger: admin describe + weight fetch + optimal computation on every check. |
 | Directly optimizes the thing you care about — balanced load. | Needs the threshold tuned to the workload. |
 
@@ -97,10 +98,9 @@ when one member is disproportionately behind.
 **Why it was not implemented:** lag is a *lagging, downstream symptom*. A member
 only accumulates lag *after* it has already been overloaded for a while.
 `ThresholdTrigger` sees the same imbalance directly from the throughput-rate
-weights and acts *before* lag builds up. Its only real advantage — not needing
-Prometheus — does not apply here, because the load-aware assignor already depends
-on Prometheus for weights. So with `ThresholdTrigger` present, a lag trigger is
-simply a slower, more reactive version of something we already do better.
+weights and acts *before* lag builds up. So with `ThresholdTrigger` present, a
+lag trigger is simply a slower, more reactive version of something we already do
+better.
 
 ### Load-variance trigger
 
@@ -108,7 +108,7 @@ simply a slower, more reactive version of something we already do better.
 and fire when dispersion is high.
 
 **Why it was not implemented:** it measures essentially the *same quantity* as
-`ThresholdTrigger` — imbalance of per-member load derived from Prometheus weights —
+`ThresholdTrigger` — imbalance of per-member load derived from the weight store —
 just with a different statistic. The decisive difference is that `ThresholdTrigger`
 compares the current assignment against the **optimal achievable** assignment, so
 it will not fire when an imbalance cannot actually be improved. Variance has no

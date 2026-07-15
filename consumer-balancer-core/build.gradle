@@ -11,6 +11,7 @@ dependencies {
     // (PrometheusClient's constructor, PrometheusObjectMappers.create()).
     api libs.jackson.databind
     implementation libs.slf4j.api
+    testImplementation libs.mockito.core
     testRuntimeOnly libs.logback.classic
     testRuntimeOnly libs.junit.platform.launcher
 }

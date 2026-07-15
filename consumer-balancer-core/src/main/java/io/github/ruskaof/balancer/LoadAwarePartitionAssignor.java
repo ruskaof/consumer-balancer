@@ -6,10 +6,12 @@ import io.github.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.prometheus.PrometheusConnectionSettings;
 import io.github.ruskaof.balancer.prometheus.PrometheusObjectMappers;
+import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.github.ruskaof.balancer.weight.PartitionWeightDefaults;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.NoArgsConstructor;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.RoundRobinAssignor;
 import org.apache.kafka.clients.consumer.internals.AbstractPartitionAssignor;
@@ -27,8 +29,11 @@ import java.util.*;
  * <p>Collaborators are taken from the consumer configs (see {@link LoadAwareAssignorConfig}):
  * {@code assignor.load-aware.weight-service}, {@code assignor.load-aware.balance-service} and
  * {@code assignor.load-aware.member-id-tracker} each accept an instance, a {@link Class} or a
- * class name. When no weight service is configured, a Prometheus-backed default is built from
- * the {@code assignor.load-aware.prometheus.*} configs.
+ * class name. When no weight service is configured, a default is built according to
+ * {@code assignor.load-aware.weight-store}: the offset-rate store (default) measures
+ * per-partition events/sec through an admin client built from the consumer's own
+ * {@code bootstrap.servers}/security configs, while {@code prometheus} builds a
+ * Prometheus-backed store from the {@code assignor.load-aware.prometheus.*} configs.
  */
 @NoArgsConstructor // For Kafka's reflection-based instantiation
 public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implements Configurable {
@@ -124,7 +129,7 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                 configs, LoadAwareAssignorConfig.WEIGHT_SERVICE, WeightService.class);
         this.weightService = configuredWeightService != null
                 ? configuredWeightService
-                : createDefaultPrometheusWeightService(configs);
+                : createDefaultWeightService(configs);
 
         this.memberIdTracker = ConfigInstanceResolver.resolveOrNull(
                 configs, LoadAwareAssignorConfig.MEMBER_ID_TRACKER, MemberIdTracker.class);
@@ -147,13 +152,48 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         lastReportedMemberId = memberId;
     }
 
+    private static WeightService createDefaultWeightService(Map<String, ?> configs) {
+        String weightStore = LoadAwareAssignorConfig.stringConfig(
+                configs, LoadAwareAssignorConfig.WEIGHT_STORE, LoadAwareAssignorConfig.WEIGHT_STORE_OFFSET_RATE);
+        return switch (weightStore) {
+            case LoadAwareAssignorConfig.WEIGHT_STORE_OFFSET_RATE -> createDefaultOffsetRateWeightService(configs);
+            case LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS -> createDefaultPrometheusWeightService(configs);
+            default -> throw new IllegalArgumentException(
+                    "Unknown " + LoadAwareAssignorConfig.WEIGHT_STORE + " value '" + weightStore
+                            + "'. Supported: '" + LoadAwareAssignorConfig.WEIGHT_STORE_OFFSET_RATE
+                            + "', '" + LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS + "'.");
+        };
+    }
+
+    /**
+     * Builds the offset-rate default from the consumer's own configs: every consumer
+     * config that is also an admin client config (bootstrap servers, SSL/SASL, ...) is
+     * reused for the store's admin client. The store — and its admin client — live for
+     * the lifetime of the JVM (only daemon threads); for explicit lifecycle control,
+     * configure a pre-built instance via {@link LoadAwareAssignorConfig#WEIGHT_SERVICE}.
+     */
+    private static KafkaOffsetRateWeightService createDefaultOffsetRateWeightService(Map<String, ?> configs) {
+        Duration rateInterval = Duration.ofMillis(LoadAwareAssignorConfig.parseLong(
+                configs,
+                LoadAwareAssignorConfig.OFFSET_RATE_RATE_INTERVAL_MS,
+                KafkaOffsetRateWeightService.DEFAULT_RATE_INTERVAL.toMillis()));
+        Duration sampleInterval = configs.get(LoadAwareAssignorConfig.OFFSET_RATE_SAMPLE_INTERVAL_MS) == null
+                ? null
+                : Duration.ofMillis(LoadAwareAssignorConfig.parseLong(
+                        configs, LoadAwareAssignorConfig.OFFSET_RATE_SAMPLE_INTERVAL_MS, 0L));
+        return KafkaOffsetRateWeightService.withOwnAdminClient(
+                LoadAwareAssignorConfig.adminClientConfigsFrom(configs), rateInterval, sampleInterval);
+    }
+
     private static PrometheusWeightService createDefaultPrometheusWeightService(Map<String, ?> configs) {
         PrometheusConnectionSettings settings = LoadAwareAssignorConfig.connectionSettingsFrom(configs);
         var prometheusClient = new PrometheusClient(settings, PrometheusObjectMappers.create());
         String weightQueryTemplate = requireNonBlank(
                 configs,
                 LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE,
-                "Required when using load-aware assignor: assignor.load-aware.prometheus.weight-query-template "
+                "Required when using the load-aware assignor with assignor.load-aware.weight-store="
+                        + LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS
+                        + ": assignor.load-aware.prometheus.weight-query-template "
                         + "(must contain %s; not required when assignor.load-aware.weight-service is set)");
         return new PrometheusWeightService(
                 new TemplatedKafkaRatePromqlBuilder(weightQueryTemplate),
@@ -172,11 +212,38 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         /**
          * {@link WeightService} used by the assignor. Value: an instance, a {@link Class},
          * or a class name with a public no-arg constructor (a {@code Configurable}
-         * implementation gets {@code configure(configs)} called). When absent, the
-         * Prometheus-backed default applies and the {@code assignor.load-aware.prometheus.*}
-         * configs become required.
+         * implementation gets {@code configure(configs)} called). When absent, the default
+         * selected by {@link #WEIGHT_STORE} applies.
          */
         public static final String WEIGHT_SERVICE = "assignor.load-aware.weight-service";
+        /**
+         * Built-in weight store used when {@link #WEIGHT_SERVICE} is absent:
+         * {@link #WEIGHT_STORE_OFFSET_RATE} (default) or {@link #WEIGHT_STORE_PROMETHEUS}.
+         */
+        public static final String WEIGHT_STORE = "assignor.load-aware.weight-store";
+        /**
+         * {@link KafkaOffsetRateWeightService} built on an admin client that reuses the
+         * consumer's own {@code bootstrap.servers} and security configs — needs no
+         * further configuration.
+         */
+        public static final String WEIGHT_STORE_OFFSET_RATE = "offset-rate";
+        /**
+         * {@link PrometheusWeightService} built from the
+         * {@code assignor.load-aware.prometheus.*} configs.
+         */
+        public static final String WEIGHT_STORE_PROMETHEUS = "prometheus";
+
+        /**
+         * Window (in milliseconds) over which the offset-rate store turns end-offset
+         * growth into events/sec. Default: 60000.
+         */
+        public static final String OFFSET_RATE_RATE_INTERVAL_MS = "assignor.load-aware.offset-rate.rate-interval-ms";
+        /**
+         * How often (in milliseconds) the offset-rate store samples end offsets in the
+         * background. Default: a quarter of the rate interval, clamped between 1 and 30
+         * seconds.
+         */
+        public static final String OFFSET_RATE_SAMPLE_INTERVAL_MS = "assignor.load-aware.offset-rate.sample-interval-ms";
         /**
          * {@link BalanceService} used by the assignor. Value: an instance, a {@link Class},
          * or a class name. Default: {@link SortingRoundRobinBalanceService}.
@@ -221,11 +288,36 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
          */
         public static final String PROMETHEUS_PARTITION_LABEL = "assignor.load-aware.prometheus.partition-label";
 
+        /**
+         * Consumer configs that are also admin client configs (bootstrap servers,
+         * SSL/SASL, timeouts, ...), for the offset-rate store's own admin client. The
+         * consumer's {@code client.id} is dropped so the admin client generates its own —
+         * reusing it would collide (e.g. in JMX) when several consumers share one id.
+         */
+        public static Map<String, Object> adminClientConfigsFrom(Map<String, ?> configs) {
+            Map<String, Object> adminConfigs = new HashMap<>();
+            for (String name : AdminClientConfig.configNames()) {
+                Object value = configs.get(name);
+                if (value != null) {
+                    adminConfigs.put(name, value);
+                }
+            }
+            adminConfigs.remove(AdminClientConfig.CLIENT_ID_CONFIG);
+            if (adminConfigs.get(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG) == null) {
+                throw new IllegalArgumentException(
+                        "Required when using the load-aware assignor with the default offset-rate weight store:"
+                                + " bootstrap.servers"
+                                + " (not required when assignor.load-aware.weight-service is set)");
+            }
+            return adminConfigs;
+        }
+
         public static PrometheusConnectionSettings connectionSettingsFrom(Map<String, ?> configs) {
             Object hostObj = configs.get(PROMETHEUS_HOST);
             if (hostObj == null || hostObj.toString().isBlank()) {
                 throw new IllegalArgumentException(
-                        "Required when using load-aware assignor: assignor.load-aware.prometheus.host"
+                        "Required when using the load-aware assignor with assignor.load-aware.weight-store="
+                                + WEIGHT_STORE_PROMETHEUS + ": assignor.load-aware.prometheus.host"
                                 + " (not required when assignor.load-aware.weight-service is set)");
             }
             String host = hostObj.toString();
@@ -233,7 +325,8 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             Object portObj = configs.get(PROMETHEUS_PORT);
             if (portObj == null || portObj.toString().isBlank()) {
                 throw new IllegalArgumentException(
-                        "Required when using load-aware assignor: assignor.load-aware.prometheus.port"
+                        "Required when using the load-aware assignor with assignor.load-aware.weight-store="
+                                + WEIGHT_STORE_PROMETHEUS + ": assignor.load-aware.prometheus.port"
                                 + " (not required when assignor.load-aware.weight-service is set)");
             }
             int port;

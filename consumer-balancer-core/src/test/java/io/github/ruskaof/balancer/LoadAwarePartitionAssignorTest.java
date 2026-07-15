@@ -3,6 +3,7 @@ package io.github.ruskaof.balancer;
 import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorConfig;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -149,10 +151,63 @@ class LoadAwarePartitionAssignorTest {
     }
 
     @Test
-    void configureBuildsPrometheusDefaultsWhenNoWeightServiceConfigured() throws Exception {
+    void configureBuildsOffsetRateDefaultsWhenNoWeightServiceConfigured() throws Exception {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+
+        assignor.configure(Map.of("bootstrap.servers", "127.0.0.1:9092"));
+
+        assertInstanceOf(SortingRoundRobinBalanceService.class, getField(assignor, "balanceService"));
+        KafkaOffsetRateWeightService weightService =
+                assertInstanceOf(KafkaOffsetRateWeightService.class, getField(assignor, "weightService"));
+        try (weightService) {
+            assertEquals(KafkaOffsetRateWeightService.DEFAULT_RATE_INTERVAL, weightService.getRateInterval());
+        }
+    }
+
+    @Test
+    void configurePassesIntervalsToOffsetRateDefaults() throws Exception {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
 
         assignor.configure(Map.of(
+                "bootstrap.servers", "127.0.0.1:9092",
+                LoadAwareAssignorConfig.OFFSET_RATE_RATE_INTERVAL_MS, "120000",
+                LoadAwareAssignorConfig.OFFSET_RATE_SAMPLE_INTERVAL_MS, "5000"));
+
+        KafkaOffsetRateWeightService weightService =
+                assertInstanceOf(KafkaOffsetRateWeightService.class, getField(assignor, "weightService"));
+        try (weightService) {
+            assertEquals(Duration.ofMinutes(2), weightService.getRateInterval());
+            assertEquals(Duration.ofSeconds(5), weightService.getSampleInterval());
+        }
+    }
+
+    @Test
+    void configureFailsWithoutWeightServiceOrBootstrapServers() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> assignor.configure(Map.of()));
+
+        assertTrue(e.getMessage().contains("bootstrap.servers"));
+    }
+
+    @Test
+    void configureFailsOnUnknownWeightStore() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> assignor.configure(Map.of(LoadAwareAssignorConfig.WEIGHT_STORE, "graphite")));
+
+        assertTrue(e.getMessage().contains("graphite"));
+        assertTrue(e.getMessage().contains(LoadAwareAssignorConfig.WEIGHT_STORE_OFFSET_RATE));
+    }
+
+    @Test
+    void configureBuildsPrometheusDefaultsWhenPrometheusStoreSelected() throws Exception {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_STORE, LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS,
                 LoadAwareAssignorConfig.PROMETHEUS_HOST, "localhost",
                 LoadAwareAssignorConfig.PROMETHEUS_PORT, "9090",
                 LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE,
@@ -171,6 +226,7 @@ class LoadAwarePartitionAssignorTest {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
 
         assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_STORE, LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS,
                 LoadAwareAssignorConfig.PROMETHEUS_HOST, "localhost",
                 LoadAwareAssignorConfig.PROMETHEUS_PORT, "9090",
                 LoadAwareAssignorConfig.PROMETHEUS_WEIGHT_QUERY_TEMPLATE,
@@ -184,11 +240,12 @@ class LoadAwarePartitionAssignorTest {
     }
 
     @Test
-    void configureFailsWithoutWeightServiceOrPrometheusConfigs() {
+    void configureFailsWithoutPrometheusHostWhenPrometheusStoreSelected() {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
 
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> assignor.configure(Map.of()));
+                () -> assignor.configure(Map.of(
+                        LoadAwareAssignorConfig.WEIGHT_STORE, LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS)));
 
         assertTrue(e.getMessage().contains(LoadAwareAssignorConfig.PROMETHEUS_HOST));
     }
@@ -199,6 +256,7 @@ class LoadAwarePartitionAssignorTest {
 
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> assignor.configure(Map.of(
+                        LoadAwareAssignorConfig.WEIGHT_STORE, LoadAwareAssignorConfig.WEIGHT_STORE_PROMETHEUS,
                         LoadAwareAssignorConfig.PROMETHEUS_HOST, "localhost",
                         LoadAwareAssignorConfig.PROMETHEUS_PORT, "9090",
                         LoadAwareAssignorConfig.PROMETHEUS_CONNECT_TIMEOUT_MS, "abc",
