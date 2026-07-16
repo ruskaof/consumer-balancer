@@ -74,6 +74,49 @@ class SortingRoundRobinBalanceServiceTest {
     }
 
     @Test
+    void spreadsZeroWeightPartitionsEvenlyAcrossMembers() {
+        Set<String> members = new TreeSet<>(List.of("c0", "c1", "c2"));
+        String topic = "orders";
+        Map<TopicPartition, Double> weights = new HashMap<>();
+        for (int p = 0; p < 6; p++) {
+            weights.put(new TopicPartition(topic, p), 0.0);
+        }
+
+        Map<String, List<TopicPartition>> assignment =
+                loadAware.computeOptimalAssignment(homogeneous(members, topic), weights);
+
+        assignment.forEach((member, partitions) -> assertEquals(
+                2, partitions.size(),
+                () -> "each member should get 2 of the 6 zero-weight partitions: " + assignment));
+
+        Set<TopicPartition> allAssigned = new HashSet<>();
+        assignment.values().forEach(allAssigned::addAll);
+        assertEquals(weights.keySet(), allAssigned, "every partition must be assigned exactly once");
+    }
+
+    @Test
+    void spreadsZeroWeightPartitionsByCountWithoutDisturbingWeightedPlacement() {
+        Set<String> members = new TreeSet<>(List.of("c0", "c1"));
+        String topic = "orders";
+        Map<TopicPartition, Double> weights = new HashMap<>();
+        weights.put(new TopicPartition(topic, 0), 10.0);
+        weights.put(new TopicPartition(topic, 1), 10.0);
+        for (int p = 2; p < 6; p++) {
+            weights.put(new TopicPartition(topic, p), 0.0);
+        }
+
+        Map<String, List<TopicPartition>> assignment =
+                loadAware.computeOptimalAssignment(homogeneous(members, topic), weights);
+
+        assignment.forEach((member, partitions) -> {
+            assertEquals(3, partitions.size(),
+                    () -> "each member should hold 3 of the 6 partitions: " + assignment);
+            assertEquals(10.0, partitions.stream().mapToDouble(weights::get).sum(),
+                    () -> "each member should carry one weighted partition: " + assignment);
+        });
+    }
+
+    @Test
     void failsWhenNoMemberSubscribesToAPartitionsTopic() {
         Map<String, Set<String>> subscribedTopics = Map.of("c0", Set.of("a"));
         Map<TopicPartition, Double> weights = Map.of(new TopicPartition("b", 0), 1.0);

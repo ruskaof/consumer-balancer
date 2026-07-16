@@ -9,7 +9,8 @@ import java.util.*;
 /**
  * Greedy least-loaded assignment: partitions are placed heaviest-first onto the eligible
  * member (one subscribed to the partition's topic) with the lowest accumulated load,
- * breaking ties by member id.
+ * breaking ties by member id. Zero-weight partitions never change a member's load, so
+ * they are spread across eligible members by assigned-partition count instead.
  */
 @Slf4j
 public class SortingRoundRobinBalanceService implements BalanceService {
@@ -41,16 +42,22 @@ public class SortingRoundRobinBalanceService implements BalanceService {
 
         for (TopicPartition partition : sortedPartitions) {
             double partitionLoad = partitionWeights.getOrDefault(partition, PartitionWeightDefaults.MISSING);
+            // A zero-weight partition never increases its owner's load, so choosing by load
+            // would elect the same member for every such partition; spread those by count.
+            boolean spreadByCount = partitionLoad <= 0.0;
 
-            String leastLoadedMember = consumerLoads.entrySet().stream()
+            String targetMember = consumerLoads.entrySet().stream()
                     .filter(e -> {
                         Set<String> topics = subscribedTopicsByMember.get(e.getKey());
                         return topics != null && topics.contains(partition.topic());
                     })
                     .min((e1, e2) -> {
-                        int loadCompare = Double.compare(e1.getValue(), e2.getValue());
-                        return (loadCompare != 0)
-                                ? loadCompare
+                        int primaryCompare = spreadByCount
+                                ? Integer.compare(assignment.get(e1.getKey()).size(),
+                                        assignment.get(e2.getKey()).size())
+                                : Double.compare(e1.getValue(), e2.getValue());
+                        return (primaryCompare != 0)
+                                ? primaryCompare
                                 : e1.getKey().compareTo(e2.getKey());
                     })
                     .orElseThrow(() -> new IllegalStateException(
@@ -58,13 +65,13 @@ public class SortingRoundRobinBalanceService implements BalanceService {
                                     + "'; cannot assign partition " + partition))
                     .getKey();
 
-            assignment.get(leastLoadedMember).add(partition);
-            consumerLoads.put(leastLoadedMember, consumerLoads.get(leastLoadedMember) + partitionLoad);
+            assignment.get(targetMember).add(partition);
+            consumerLoads.put(targetMember, consumerLoads.get(targetMember) + partitionLoad);
 
             if (log.isTraceEnabled()) {
                 log.trace("Assigned partition {} (load={}) to member {} (new load={})",
-                        partition, partitionLoad, leastLoadedMember,
-                        consumerLoads.get(leastLoadedMember));
+                        partition, partitionLoad, targetMember,
+                        consumerLoads.get(targetMember));
             }
         }
 

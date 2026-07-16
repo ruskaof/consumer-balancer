@@ -64,17 +64,23 @@ public class ThresholdTrigger implements RebalanceTrigger {
             var currentMaxLoaded = calculateMaxLoadedMember(currentAssignment, weights);
 
             if (optimalMaxLoaded == null || currentMaxLoaded == null) {
+                log.info("ThresholdTrigger evaluated [group={}]: no members with assignments, shouldTrigger=false",
+                        groupId);
                 return false;
             }
             if (optimalMaxLoaded.memberLoad <= 0.0) {
                 // All weights are zero; there is no imbalance to fix.
+                log.info("ThresholdTrigger evaluated [group={}]: all partition weights are zero, shouldTrigger=false",
+                        groupId);
                 return false;
             }
 
-            boolean shouldTrigger = currentMaxLoaded.memberLoad / optimalMaxLoaded.memberLoad > threshold;
+            double ratio = currentMaxLoaded.memberLoad / optimalMaxLoaded.memberLoad;
+            boolean shouldTrigger = ratio > threshold;
 
-            log.debug("ThresholdTrigger result: optimalMaxLoaded={}, currentMaxLoaded={}, shouldTrigger={}",
-                    optimalMaxLoaded, currentMaxLoaded, shouldTrigger);
+            log.info("ThresholdTrigger evaluated [group={}]: currentMaxLoaded={}, optimalMaxLoaded={}, "
+                            + "ratio={}, threshold={}, shouldTrigger={}",
+                    groupId, currentMaxLoaded, optimalMaxLoaded, ratio, threshold, shouldTrigger);
             return shouldTrigger;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
