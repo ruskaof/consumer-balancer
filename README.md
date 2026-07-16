@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:5.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:5.0.1")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:5.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:5.0.1")
 }
 ```
 
