@@ -12,9 +12,9 @@ import java.util.Map;
 
 /**
  * Injects the application context's {@link WeightService} and {@link BalanceService}
- * (and, when proactive rebalance is enabled, the {@link MemberIdTracker}) into Boot's
- * auto-configured consumer factory, so {@link LoadAwarePartitionAssignor} uses the same
- * collaborators as the rebalance trigger.
+ * (and, when proactive rebalance is enabled, the {@link MemberIdTracker}), plus the
+ * configured instance id, into Boot's auto-configured consumer factory, so
+ * {@link LoadAwarePartitionAssignor} uses the same collaborators as the rebalance trigger.
  *
  * <p>Explicit user-provided values under the same keys (e.g. from
  * {@code spring.kafka.consumer.properties.*}) win over the context beans.
@@ -25,6 +25,7 @@ public class BalancerConsumerFactoryCustomizer implements DefaultKafkaConsumerFa
     private final WeightService weightService;
     private final BalanceService balanceService;
     private final MemberIdTracker memberIdTracker; // null when proactive rebalance is disabled
+    private final String instanceId; // null lets the assignor use its per-JVM random id
 
     @Override
     public void customize(DefaultKafkaConsumerFactory<?, ?> consumerFactory) {
@@ -33,6 +34,9 @@ public class BalancerConsumerFactoryCustomizer implements DefaultKafkaConsumerFa
         putIfAbsent(existing, updates, LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService);
         putIfAbsent(existing, updates, LoadAwareAssignorConfig.BALANCE_SERVICE, balanceService);
         putIfAbsent(existing, updates, LoadAwareAssignorConfig.MEMBER_ID_TRACKER, memberIdTracker);
+        if (instanceId != null && !instanceId.isBlank()) {
+            putIfAbsent(existing, updates, LoadAwareAssignorConfig.INSTANCE_ID, instanceId);
+        }
         if (!updates.isEmpty()) {
             consumerFactory.updateConfigs(updates);
         }

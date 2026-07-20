@@ -21,6 +21,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 
+import java.time.Clock;
 import java.util.Set;
 import java.util.function.Supplier;
 
@@ -46,8 +47,8 @@ public class BalancerAutoConfiguration {
 
     /**
      * Puts the context's {@link WeightService}/{@link BalanceService} (and
-     * {@link MemberIdTracker} when proactive rebalance is enabled) into the
-     * auto-configured consumer factory's configs, where
+     * {@link MemberIdTracker} when proactive rebalance is enabled) and the configured
+     * instance id into the auto-configured consumer factory's configs, where
      * {@code LoadAwarePartitionAssignor} picks them up. Registered even when proactive
      * rebalance is disabled — the assignor path needs weights either way.
      */
@@ -56,11 +57,13 @@ public class BalancerAutoConfiguration {
     public BalancerConsumerFactoryCustomizer balancerConsumerFactoryCustomizer(
             WeightService weightService,
             BalanceService balanceService,
-            ObjectProvider<MemberIdTracker> memberIdTracker) {
+            ObjectProvider<MemberIdTracker> memberIdTracker,
+            KafkaBalancerProperties kafkaBalancerProperties) {
         return new BalancerConsumerFactoryCustomizer(
                 weightService,
                 balanceService,
-                memberIdTracker.getIfAvailable());
+                memberIdTracker.getIfAvailable(),
+                kafkaBalancerProperties.getInstanceId());
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -93,7 +96,9 @@ public class BalancerAutoConfiguration {
                     requireConsumerGroupId(kafkaProperties),
                     weightService,
                     kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
-                    balanceService);
+                    balanceService,
+                    kafkaBalancerProperties.getRebalanceRefireSuppression(),
+                    Clock.systemUTC());
         }
 
         @Bean

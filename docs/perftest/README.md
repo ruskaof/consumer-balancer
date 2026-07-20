@@ -35,13 +35,16 @@ the load distribution drifts, it
 The comparison runs all three strategies side by side in the
 [`docker/`](../../docker/docker-compose.yaml) harness:
 
-- **One topic, 32 partitions.** Three independent consumer groups, identical in
+- **One topic, 6 partitions.** Three independent consumer groups, identical in
   every way except the assignor:
   - `listener-roundrobin` — `RoundRobinAssignor` (balancer off)
   - `listener-cooperative-sticky` — `CooperativeStickyAssignor` (balancer off)
   - `listener-balanced` — `LoadAwarePartitionAssignor` (balancer on)
-- **4 instances × concurrency 2 = 8 consumers per group**, so ~4 partitions per
-  consumer on average.
+- **4 instances × concurrency 2 = 8 consumers per group** — *more consumers than
+  partitions*, the worst case for count-based assignors: two consumers stay idle,
+  and which instances they belong to is arbitrary, so per-instance traffic depends
+  on luck. The load-aware assignor instead spreads the partitions (and their
+  measured traffic) evenly across the four instances.
 - **Skewed, shifting workload** (`test-scripts/load-generator`): partitions are
   split into high- (every 50 ms), medium- (every 200 ms) and low-traffic (every
   500 ms) sets. The run is two 300-second iterations, and the high/medium/low
@@ -55,6 +58,10 @@ The comparison runs all three strategies side by side in the
 ---
 
 ## Results
+
+*(The graph below was recorded under the previous 32-partition configuration —
+partitions ≥ consumers — and predates instance-aware balancing; the CI run
+regenerates `test-out/` graphs for the current 6-partition setup.)*
 
 ![Per-instance throughput for round-robin, load-aware, and cooperative-sticky under a shifting skewed load](assignors_comparison.png)
 

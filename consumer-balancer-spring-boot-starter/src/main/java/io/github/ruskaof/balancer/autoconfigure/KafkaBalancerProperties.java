@@ -1,5 +1,6 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
+import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
@@ -32,10 +33,28 @@ public class KafkaBalancerProperties {
     private final Coordinator coordinator = new Coordinator();
 
     /**
-     * Fire proactive rebalance when (max member load / optimal max load) exceeds
-     * this value.
+     * Fire proactive rebalance when (max instance load / optimal max instance load)
+     * exceeds this value.
      */
     private double rebalanceLoadImbalanceThreshold = 1.1d;
+
+    /**
+     * Application-instance id shared by every consumer in this JVM (pod). Members
+     * reporting the same id are balanced as one instance: traffic is evened across
+     * instances first, across each instance's members second. Empty means a random id
+     * generated once per JVM (all consumers in the JVM still group together). Set it
+     * explicitly for stable, human-readable instance labels in the leader's
+     * assignment logs.
+     */
+    private String instanceId;
+
+    /**
+     * After the threshold trigger fires, how long it refuses to fire again on an
+     * unchanged group assignment. This damps a rebalance loop when the trigger's
+     * host-based instance grouping disagrees with the assignor's reported instance
+     * ids. Zero disables suppression.
+     */
+    private Duration rebalanceRefireSuppression = ThresholdTrigger.DEFAULT_REFIRE_SUPPRESSION;
 
     public boolean isEnabled() {
         return enabled;
@@ -79,6 +98,22 @@ public class KafkaBalancerProperties {
 
     public void setRebalanceLoadImbalanceThreshold(double rebalanceLoadImbalanceThreshold) {
         this.rebalanceLoadImbalanceThreshold = rebalanceLoadImbalanceThreshold;
+    }
+
+    public String getInstanceId() {
+        return instanceId;
+    }
+
+    public void setInstanceId(String instanceId) {
+        this.instanceId = instanceId;
+    }
+
+    public Duration getRebalanceRefireSuppression() {
+        return rebalanceRefireSuppression;
+    }
+
+    public void setRebalanceRefireSuppression(Duration rebalanceRefireSuppression) {
+        this.rebalanceRefireSuppression = rebalanceRefireSuppression;
     }
 
     public enum WeightStore {

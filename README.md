@@ -2,7 +2,7 @@
 
 Load-aware Kafka consumer partition assignment driven by per-partition **weights** (default: events/sec measured from partition end offsets via Kafka's AdminClient), plus optional **proactive rebalance** when an elected group member detects load imbalance.
 
-Built-in Kafka assignors such as `RangeAssignor` and `RoundRobinAssignor` balance **partition count** (and sticky strategies minimize movement). They do not use **per-partition load** signals. This library assigns partitions with a greedy **least-loaded** strategy using those weights, which reduces the worst consumer load when weights are skewed.
+Built-in Kafka assignors such as `RangeAssignor` and `RoundRobinAssignor` balance **partition count** (and sticky strategies minimize movement). They do not use **per-partition load** signals, and they treat every consumer as independent even when several consumers are threads of one application instance. This library assigns partitions with a greedy **least-loaded** strategy using those weights, evening traffic across **application instances** (pods/JVMs) first and across the consumers inside each instance second — see [Instance-aware balancing](#instance-aware-balancing).
 
 ## Modules
 
@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:5.0.1")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:6.0.0")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:5.0.1")
+    implementation("io.github.ruskaof:consumer-balancer-core:6.0.0")
 }
 ```
 
@@ -101,6 +101,26 @@ consumer-balancer:
     path-prefix: /select/0/prometheus
 ```
 
+## Instance-aware balancing
+
+One application instance (a pod, a JVM) usually runs **several** consumers — with Spring, `listener containers × spring.kafka.listener.concurrency` group members. Those members share the instance's CPU, so balancing per member is not enough: two heavy members could land in one pod, and when the group has **more members than partitions** a plain member-level assignor leaves arbitrary members — and therefore arbitrary pods — idle.
+
+The assignor therefore balances in two levels:
+
+1. Every member reports an **instance id** to the group leader (through subscription userData). Members sharing an id form one instance.
+2. Partitions are placed heaviest-first onto the eligible **instance** with the lowest total load, then onto the least-loaded member **inside** that instance. Zero-weight partitions spread by count at both levels.
+
+The result: instances receive equal traffic regardless of how many members each runs, heavy partitions never pile onto one pod while another idles, and with fewer partitions than members every instance still gets its fair share (`floor(P/I)`–`ceil(P/I)` partitions across `I` instances).
+
+The instance id resolves in this order:
+
+1. `consumer-balancer.instance-id` property (or the `assignor.load-aware.instance-id` consumer config) — set it when you want stable, human-readable instance labels (e.g. the pod name) in the leader's assignment logs;
+2. otherwise a **random id generated once per JVM** — every consumer in the JVM shares it, and distinct JVMs never collide, even on one machine.
+
+A member whose userData carries no readable instance id (e.g. an older library version during a rolling upgrade) is treated as its own single-member instance, so mixed-version groups keep working and converge once the rollout completes.
+
+The proactive `ThresholdTrigger` compares **instance-level** loads too. Because the AdminClient cannot see subscription userData, the trigger groups members by their broker-observed client host; whenever each JVM has its own address (one pod = one IP in Kubernetes) that is exactly the assignor's per-JVM grouping. When instance grouping does not align with client hosts (several JVMs on one machine, pods on the host network sharing a node IP), the trigger's view can disagree with the assignor's; a built-in guard then suppresses repeat rebalances on an unchanged assignment for `consumer-balancer.rebalance-refire-suppression` (default `10m`) instead of looping every check interval.
+
 ## Bean wiring
 
 The starter injects the application context's `WeightService`, `BalanceService` and (when proactive rebalance is enabled) `MemberIdTracker` beans into Spring Boot's auto-configured consumer factory under the `assignor.load-aware.*` keys, so the assignor uses exactly the same collaborators as the rebalance trigger. Values set explicitly under `spring.kafka.consumer.properties.assignor.load-aware.*` win over the injected beans.
@@ -113,7 +133,9 @@ If you define your own `ConsumerFactory` bean, Boot's factory customizers do not
 |----------|---------|-------------|
 | `consumer-balancer.enabled` | `true` | Master switch for balancer auto-configuration. |
 | `consumer-balancer.proactive-rebalance-enabled` | `true` | When `true`, one elected consumer runs the threshold trigger and may call `enforceRebalance()` on listener containers. |
-| `consumer-balancer.rebalance-load-imbalance-threshold` | `1.1` | Proactive rebalance when `(max member load) / (optimal max load) > threshold` (see `ThresholdTrigger`). |
+| `consumer-balancer.rebalance-load-imbalance-threshold` | `1.1` | Proactive rebalance when `(max instance load) / (optimal max instance load) > threshold` (see `ThresholdTrigger`). |
+| `consumer-balancer.instance-id` | *(auto)* | Application-instance id shared by every consumer in this JVM; members reporting the same id are balanced as one instance. Default: a random id generated once per JVM. |
+| `consumer-balancer.rebalance-refire-suppression` | `10m` | After the threshold trigger fires, how long it refuses to fire again on an unchanged group assignment (damps trigger/assignor disagreement loops). `0` disables suppression. |
 | `consumer-balancer.weight-store` | `offset-rate` | Built-in weight store to auto-configure: `offset-rate` or `prometheus`. Ignored when a custom `WeightService` bean is defined. |
 | `consumer-balancer.offset-rate.rate-interval` | `1m` | Window over which end-offset growth is turned into an events/sec weight. |
 | `consumer-balancer.offset-rate.sample-interval` | `rate-interval / 4` | How often end offsets are sampled in the background (default clamped between `1s` and `30s`). |
@@ -137,6 +159,10 @@ If you define your own `ConsumerFactory` bean, Boot's factory customizers do not
 - `assignor.load-aware.weight-service` — `WeightService` used for assignment. When absent, the default selected by `assignor.load-aware.weight-store` is built.
 - `assignor.load-aware.balance-service` — `BalanceService` used for assignment (default: `SortingRoundRobinBalanceService`).
 - `assignor.load-aware.member-id-tracker` — optional `MemberIdTracker` that receives this consumer's member id after every rebalance (needed for proactive rebalance).
+
+Plus one plain-string key:
+
+- `assignor.load-aware.instance-id` — the application-instance id this consumer reports to the group leader (see [Instance-aware balancing](#instance-aware-balancing)). Default: a random id generated once per JVM.
 
 Weight-store keys, used **only** when `assignor.load-aware.weight-service` is not set (the Spring Boot starter covers this case by injecting the `WeightService` bean instead):
 
@@ -183,7 +209,7 @@ var consumer = new KafkaConsumer<>(configs, new StringDeserializer(), new ByteAr
 
 ## Custom weight store
 
-Implement `io.github.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. Both built-in weight stores back off when a `WeightService` bean is present, and the bean drives **both** the `LoadAwarePartitionAssignor` and the proactive `ThresholdTrigger`. The same override mechanism applies to `BalanceService`.
+Implement `io.github.ruskaof.balancer.weight.WeightService` and expose it as a Spring `@Bean`. Both built-in weight stores back off when a `WeightService` bean is present, and the bean drives **both** the `LoadAwarePartitionAssignor` and the proactive `ThresholdTrigger`. The same override mechanism applies to `BalanceService` (`computeOptimalAssignment(Collection<GroupMember>, Map<TopicPartition, Double>)` — each `GroupMember` carries its member id, instance id and subscribed topics).
 
 The returned map is treated as a lookup over the requested partitions: requested partitions that are missing (or mapped to `null`/non-finite values) fall back to the default weight `1.0`, and entries for partitions that were not requested are ignored.
 
@@ -194,6 +220,8 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 - With the default offset-rate store, the first assignment after an instance becomes group leader uses default weights (no offset history yet) and is effectively count-balanced; subsequent assignments and proactive-trigger checks use measured rates. Partitions whose end offset went backwards (e.g. a recreated topic) fall back to the default weight `1.0` until fresh history accrues.
 - With the Prometheus store, your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. If your metrics use different label names (e.g. `kafka_topic`), set `consumer-balancer.prometheus.topic-label` / `partition-label` accordingly — remember the `by (...)` clause of the query must keep those labels. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
 - Partitions are assigned only to members subscribed to their topic, so groups whose members subscribe to different topic sets are handled correctly.
+- With more members than partitions, partitions spread evenly across **instances** (some members inside each instance stay idle); with fewer instances than partitions than members, every instance carries a near-equal share of the measured traffic. Instances receive equal traffic regardless of their member counts — an instance running fewer threads gets the same load on fewer, busier members.
+- The threshold trigger approximates instances by the broker-observed client host of each member. Whenever each JVM has its own address (one pod = one IP in Kubernetes), that induces exactly the assignor's per-JVM grouping. When instances share an address (several JVMs per machine, host-network pods), expect the refire-suppression guard to damp any trigger/assignor disagreement — a warning naming the cause is logged.
 - Proactive rebalance requires a group id in `spring.kafka.consumer.group-id`; only the listener containers of that group receive `enforceRebalance()`.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
 - `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed — along with the member-id tracking that proactive rebalance relies on.

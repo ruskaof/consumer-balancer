@@ -22,26 +22,29 @@ class BalancerConsumerFactoryCustomizerTest {
     void injectsContextCollaboratorsIntoFactoryConfigs() {
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(new HashMap<>());
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker)
+        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker, "pod-1")
                 .customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService)
                 .containsEntry(LoadAwareAssignorConfig.BALANCE_SERVICE, balanceService)
-                .containsEntry(LoadAwareAssignorConfig.MEMBER_ID_TRACKER, memberIdTracker);
+                .containsEntry(LoadAwareAssignorConfig.MEMBER_ID_TRACKER, memberIdTracker)
+                .containsEntry(LoadAwareAssignorConfig.INSTANCE_ID, "pod-1");
     }
 
     @Test
     void doesNotOverwriteExplicitUserValues() {
         Map<String, Object> initial = new HashMap<>();
         initial.put(LoadAwareAssignorConfig.WEIGHT_SERVICE, "com.example.CustomWeightService");
+        initial.put(LoadAwareAssignorConfig.INSTANCE_ID, "explicit-pod");
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(initial);
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker)
+        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker, "pod-1")
                 .customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, "com.example.CustomWeightService")
+                .containsEntry(LoadAwareAssignorConfig.INSTANCE_ID, "explicit-pod")
                 .containsEntry(LoadAwareAssignorConfig.BALANCE_SERVICE, balanceService);
     }
 
@@ -49,12 +52,23 @@ class BalancerConsumerFactoryCustomizerTest {
     void skipsTrackerKeyWhenTrackerIsAbsent() {
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(new HashMap<>());
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, null)
+        new BalancerConsumerFactoryCustomizer(weightService, balanceService, null, null)
                 .customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService)
                 .doesNotContainKey(LoadAwareAssignorConfig.MEMBER_ID_TRACKER);
+    }
+
+    @Test
+    void skipsInstanceIdKeyWhenNotConfigured() {
+        DefaultKafkaConsumerFactory<Object, Object> factory = factory(new HashMap<>());
+
+        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker, " ")
+                .customize(factory);
+
+        assertThat(factory.getConfigurationProperties())
+                .doesNotContainKey(LoadAwareAssignorConfig.INSTANCE_ID);
     }
 
     private static DefaultKafkaConsumerFactory<Object, Object> factory(Map<String, Object> configs) {

@@ -1,13 +1,16 @@
 package io.github.ruskaof.balancer;
 
 import io.github.ruskaof.balancer.balance.BalanceService;
+import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import io.github.ruskaof.balancer.instance.InstanceIdResolver;
+import io.github.ruskaof.balancer.instance.InstanceUserData;
 import io.github.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.prometheus.PrometheusConnectionSettings;
 import io.github.ruskaof.balancer.prometheus.PrometheusObjectMappers;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
-import io.github.ruskaof.balancer.weight.PartitionWeightDefaults;
+import io.github.ruskaof.balancer.weight.PartitionWeights;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.NoArgsConstructor;
@@ -20,11 +23,16 @@ import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
 
 /**
- * Partition assignor that weights partitions by observed load and spreads them greedily.
+ * Partition assignor that weights partitions by observed load and spreads them greedily,
+ * evening traffic across application instances (pods/JVMs) first and across the members of
+ * each instance second. Every member reports its instance id — configured or auto-resolved
+ * by {@link InstanceIdResolver} — to the group leader through subscription userData, so the
+ * leader can group co-located members.
  *
  * <p>Collaborators are taken from the consumer configs (see {@link LoadAwareAssignorConfig}):
  * {@code assignor.load-aware.weight-service}, {@code assignor.load-aware.balance-service} and
@@ -43,6 +51,7 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
     private WeightService weightService = null;
     private BalanceService balanceService = null;
     private MemberIdTracker memberIdTracker = null;
+    private String instanceId = null;
     private String lastReportedMemberId = null;
     private final RoundRobinAssignor fallbackAssignor = new RoundRobinAssignor();
 
@@ -64,45 +73,57 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         }
     }
 
+    /**
+     * Reports this consumer's instance id to the group leader; the leader groups members
+     * sharing an id into one application instance when balancing.
+     */
+    @Override
+    public ByteBuffer subscriptionUserData(Set<String> topics) {
+        return instanceId == null ? null : InstanceUserData.encode(instanceId);
+    }
+
     private Map<String, List<TopicPartition>> assignWithLoadAwareness(
             Map<String, Integer> partitionsPerTopic,
             Map<String, Subscription> subscriptions) {
 
         Set<TopicPartition> allPartitions = getAllPartitions(partitionsPerTopic);
-        Map<TopicPartition, Double> weights = sanitizedWeights(
+        Map<TopicPartition, Double> weights = PartitionWeights.sanitized(
                 allPartitions, weightService.computeWeights(allPartitions));
 
-        Map<String, Set<String>> subscribedTopicsByMember = new HashMap<>();
-        subscriptions.forEach((member, subscription) ->
-                subscribedTopicsByMember.put(member, Set.copyOf(subscription.topics())));
-
-        return balanceService.computeOptimalAssignment(subscribedTopicsByMember, weights);
+        return balanceService.computeOptimalAssignment(groupMembersFrom(subscriptions), weights);
     }
 
     /**
-     * Restricts weights to the partitions being assigned so the assignment covers exactly
-     * {@code allPartitions}: entries the weight service did not return (or returned as
-     * {@code null}/non-finite) fall back to {@link PartitionWeightDefaults#MISSING}, and
-     * entries for other partitions (e.g. stale Prometheus series) are dropped.
+     * Builds the balance-service view of the group: each member with the instance id it
+     * reported through subscription userData. A member without a readable id (e.g. one
+     * running an older library version during a rolling upgrade) counts as its own
+     * single-member instance.
      */
-    private static Map<TopicPartition, Double> sanitizedWeights(
-            Set<TopicPartition> allPartitions,
-            Map<TopicPartition, Double> rawWeights) {
-        Map<TopicPartition, Double> weights = new HashMap<>();
-        int defaulted = 0;
-        for (TopicPartition tp : allPartitions) {
-            Double weight = rawWeights == null ? null : rawWeights.get(tp);
-            if (weight == null || !Double.isFinite(weight)) {
-                weight = PartitionWeightDefaults.MISSING;
-                defaulted++;
+    private static List<GroupMember> groupMembersFrom(Map<String, Subscription> subscriptions) {
+        List<GroupMember> members = new ArrayList<>(subscriptions.size());
+        List<String> absent = new ArrayList<>();
+        List<String> corrupt = new ArrayList<>();
+        subscriptions.forEach((memberId, subscription) -> {
+            InstanceUserData.Decoded decoded = InstanceUserData.decode(subscription.userData());
+            if (decoded.status() == InstanceUserData.Status.ABSENT) {
+                absent.add(memberId);
+            } else if (decoded.status() == InstanceUserData.Status.CORRUPT) {
+                corrupt.add(memberId);
             }
-            weights.put(tp, weight);
+            members.add(new GroupMember(
+                    memberId,
+                    decoded.ok() ? decoded.instanceId() : memberId,
+                    Set.copyOf(subscription.topics())));
+        });
+        if (!absent.isEmpty()) {
+            log.info("Members {} sent no instance id; treating each as its own instance"
+                    + " (expected while rolling out a version that reports instance ids)", absent);
         }
-        if (defaulted > 0) {
-            log.warn("{} of {} partitions had no usable weight; using default weight {}",
-                    defaulted, allPartitions.size(), PartitionWeightDefaults.MISSING);
+        if (!corrupt.isEmpty()) {
+            log.warn("Members {} sent unreadable instance-id userData; treating each as its own instance",
+                    corrupt);
         }
-        return weights;
+        return members;
     }
 
     private static Set<TopicPartition> getAllPartitions(Map<String, Integer> partitionsPerTopic) {
@@ -133,6 +154,9 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
         this.memberIdTracker = ConfigInstanceResolver.resolveOrNull(
                 configs, LoadAwareAssignorConfig.MEMBER_ID_TRACKER, MemberIdTracker.class);
+
+        this.instanceId = InstanceIdResolver.resolve(LoadAwareAssignorConfig.stringConfig(
+                configs, LoadAwareAssignorConfig.INSTANCE_ID, null));
     }
 
     /**
@@ -255,6 +279,14 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
          * same instance to {@code CoordinatorElection} for proactive rebalancing.
          */
         public static final String MEMBER_ID_TRACKER = "assignor.load-aware.member-id-tracker";
+        /**
+         * Optional application-instance id shared by every consumer in this JVM (pod).
+         * Members reporting the same id are balanced as one instance: traffic is evened
+         * across instances first, across each instance's members second. Default: a
+         * random id generated once per JVM; set an explicit id for human-readable
+         * instance labels in the leader's assignment logs.
+         */
+        public static final String INSTANCE_ID = "assignor.load-aware.instance-id";
 
         public static final String PROMETHEUS_HOST = "assignor.load-aware.prometheus.host";
         public static final String PROMETHEUS_PORT = "assignor.load-aware.prometheus.port";

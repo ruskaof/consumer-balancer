@@ -2,7 +2,10 @@ package io.github.ruskaof.balancer;
 
 import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorConfig;
 import io.github.ruskaof.balancer.balance.BalanceService;
+import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import io.github.ruskaof.balancer.instance.InstanceIdResolver;
+import io.github.ruskaof.balancer.instance.InstanceUserData;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
@@ -17,6 +20,7 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -57,7 +61,10 @@ class LoadAwarePartitionAssignorTest {
                 new TopicPartition(topic, 1),
                 new TopicPartition(topic, 2)));
         Map<String, List<TopicPartition>> expected = balance.computeOptimalAssignment(
-                Map.of("a", Set.of(topic), "b", Set.of(topic)), w);
+                List.of(
+                        new GroupMember("a", "a", Set.of(topic)),
+                        new GroupMember("b", "b", Set.of(topic))),
+                w);
 
         assertEquals(expected, assignment);
     }
@@ -65,7 +72,7 @@ class LoadAwarePartitionAssignorTest {
     @Test
     void assignsPartitionsOnlyToSubscribedMembers() {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
-        AtomicReference<Map<String, Set<String>>> capturedMembers = new AtomicReference<>();
+        AtomicReference<Collection<GroupMember>> capturedMembers = new AtomicReference<>();
         BalanceService capturingBalance = (members, weights) -> {
             capturedMembers.set(members);
             return new SortingRoundRobinBalanceService().computeOptimalAssignment(members, weights);
@@ -82,7 +89,10 @@ class LoadAwarePartitionAssignorTest {
 
         Map<String, List<TopicPartition>> assignment = assignor.assign(partitionsPerTopic, subscriptions);
 
-        assertEquals(Map.of("a", Set.of("t1"), "b", Set.of("t1", "t2")), capturedMembers.get(),
+        assertEquals(
+                Map.of("a", Set.of("t1"), "b", Set.of("t1", "t2")),
+                capturedMembers.get().stream().collect(
+                        Collectors.toMap(GroupMember::memberId, GroupMember::subscribedTopics)),
                 "load-aware path must run and receive each member's subscribed topics");
         assertTrue(assignment.get("a").stream().allMatch(tp -> tp.topic().equals("t1")),
                 "member 'a' did not subscribe to t2 but was assigned: " + assignment.get("a"));
@@ -92,6 +102,87 @@ class LoadAwarePartitionAssignorTest {
                 new TopicPartition("t1", 0),
                 new TopicPartition("t2", 0),
                 new TopicPartition("t2", 1)), allAssigned);
+    }
+
+    @Test
+    void subscriptionUserDataCarriesConfiguredInstanceId() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.INSTANCE_ID, "pod-1"));
+
+        InstanceUserData.Decoded decoded =
+                InstanceUserData.decode(assignor.subscriptionUserData(Set.of("t")));
+
+        assertTrue(decoded.ok());
+        assertEquals("pod-1", decoded.instanceId());
+    }
+
+    @Test
+    void subscriptionUserDataFallsBackToAutoInstanceId() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of()));
+
+        InstanceUserData.Decoded decoded =
+                InstanceUserData.decode(assignor.subscriptionUserData(Set.of("t")));
+
+        assertTrue(decoded.ok());
+        assertEquals(InstanceIdResolver.autoInstanceId(), decoded.instanceId());
+    }
+
+    @Test
+    void assignGroupsMembersByReportedInstanceId() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        AtomicReference<Collection<GroupMember>> capturedMembers = new AtomicReference<>();
+        BalanceService capturingBalance = (members, weights) -> {
+            capturedMembers.set(members);
+            return new SortingRoundRobinBalanceService().computeOptimalAssignment(members, weights);
+        };
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
+
+        Map<String, Subscription> subscriptions = new TreeMap<>();
+        subscriptions.put("a1", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
+        subscriptions.put("a2", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
+        subscriptions.put("b1", new Subscription(List.of("t"), InstanceUserData.encode("pod-b")));
+
+        assignor.assign(Map.of("t", 2), subscriptions);
+
+        assertEquals(
+                Map.of("a1", "pod-a", "a2", "pod-a", "b1", "pod-b"),
+                capturedMembers.get().stream().collect(
+                        Collectors.toMap(GroupMember::memberId, GroupMember::instanceId)));
+    }
+
+    @Test
+    void assignTreatsMembersWithoutReadableInstanceIdAsTheirOwnInstances() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        AtomicReference<Collection<GroupMember>> capturedMembers = new AtomicReference<>();
+        BalanceService capturingBalance = (members, weights) -> {
+            capturedMembers.set(members);
+            return new SortingRoundRobinBalanceService().computeOptimalAssignment(members, weights);
+        };
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
+
+        Map<String, Subscription> subscriptions = new TreeMap<>();
+        subscriptions.put("ok", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
+        subscriptions.put("nullData", new Subscription(List.of("t"), null));
+        subscriptions.put("emptyData", new Subscription(List.of("t"), ByteBuffer.allocate(0)));
+        subscriptions.put("garbage", new Subscription(List.of("t"), ByteBuffer.wrap(new byte[]{7})));
+
+        Map<String, List<TopicPartition>> assignment = assignor.assign(Map.of("t", 4), subscriptions);
+
+        assertEquals(
+                Map.of("ok", "pod-a", "nullData", "nullData", "emptyData", "emptyData", "garbage", "garbage"),
+                capturedMembers.get().stream().collect(
+                        Collectors.toMap(GroupMember::memberId, GroupMember::instanceId)),
+                "members without a readable instance id must fall back to their member id");
+        assertEquals(4, assignment.values().stream().mapToInt(List::size).sum(),
+                "every partition must still be assigned");
     }
 
     @Test
