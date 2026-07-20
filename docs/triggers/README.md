@@ -30,12 +30,22 @@ across already-assigned partitions has drifted. Triggers fill that gap.
 Describes the consumer group, pulls per-partition weights from the configured
 weight store (by default, end-offset rates measured through the Kafka
 AdminClient), computes the *optimal* assignment via the `BalanceService`, and
-compares the **current** most-loaded member against the **optimal** most-loaded
-member. It fires when:
+compares the **current** most-loaded application instance against the
+**optimal** most-loaded instance. Members are grouped into instances by their
+broker-observed client host (the AdminClient cannot see the instance ids members
+report to the assignor); members with a blank host count as their own instances.
+It fires when:
 
 ```
-currentMaxLoad / optimalMaxLoad > rebalanceLoadImbalanceThreshold   (default 1.1)
+currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.1)
 ```
+
+Because the assignor is deterministic, a grouping disagreement between the
+trigger (host-based) and the assignor (reported instance ids) would re-fire a
+useless rebalance on every check. The trigger therefore remembers the assignment
+it last fired on and, while it stays unchanged, suppresses further fires for
+`consumer-balancer.rebalance-refire-suppression` (default `10m`, `0` disables),
+logging a warning that names the likely cause.
 
 | Pros | Cons |
 | --- | --- |
