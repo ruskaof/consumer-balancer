@@ -134,12 +134,20 @@ It has to be, because it watches the group from the *outside*, through the Admin
 Each of those can make the computed optimum unreachable — and since the assignor is deterministic, an unreachable optimum asks for the same useless rebalance on every check. Three guards keep that from becoming a rebalance storm:
 
 1. **Stable groups only.** While the group is rebalancing, the AdminClient reports partial or previous-generation assignments. Judging those would fire again on the rebalance the trigger has just caused, which is a self-sustaining loop. Non-stable checks are skipped entirely and do not even count toward the hysteresis below.
-2. **Hysteresis.** The imbalance must show up on `consumer-balancer.rebalance-min-violated-checks` consecutive checks *of one unchanged assignment* (default `3`, so ~90s at the default check interval) before it counts as real rather than as a noisy weight sample.
+2. **Hysteresis.** The imbalance must show up on `consumer-balancer.rebalance-min-violated-checks` checks *of one unchanged assignment* (default `2`) before it counts as real rather than as a noisy weight sample. A check that finds the group balanced *decays* that count by one instead of resetting it: right after the load moves, the weight window still spans the load being replaced, so the ratio drifts back and forth across the threshold — a strict reset would restart the count over and over exactly when the trigger is most needed. Moving a partition does reset it, because a streak about one assignment says nothing about another.
 3. **Cooldown with backoff.** Two rebalances are never closer together than `consumer-balancer.rebalance-cooldown` (default `10m`) — whether or not the previous one changed the assignment, which is what bounds the cost when the trigger and the assignor disagree. Every rebalance that does not bring the group within the threshold doubles the cooldown up to `consumer-balancer.rebalance-max-cooldown` (default `2h`), with a warning naming the likely causes; the cooldown returns to its base as soon as the group is seen balanced again.
 
-So a genuine, sustained imbalance is corrected within roughly two minutes, while a disagreement the assignor cannot resolve costs one rebalance and then fades to one attempt every two hours. If you want the group corrected more eagerly, lower `rebalance-cooldown` and `rebalance-min-violated-checks` — but do it knowing each fire is a stop-the-world pause for every consumer in the group.
+**How long a correction takes** is the sum of three things, and the defaults assume load that drifts over tens of minutes:
 
-`consumer-balancer.rebalance-load-imbalance-threshold` (default `1.2`) must stay clear of the noise floor created by the third point above: with a threshold near `1.0` a perfectly balanced group still looks violated, and the guards above then turn that into one pointless rebalance per cooldown forever instead of none.
+```
+offset-rate rate-interval          60s   the weights must catch up to the new load
++ check-interval x min-violated-checks    60s   the imbalance must be confirmed
++ whatever is left of the cooldown
+```
+
+So a genuine, sustained imbalance is corrected in roughly two minutes, while a disagreement the assignor cannot resolve costs one rebalance and then fades to one attempt every two hours. If your load moves faster than that, shorten `offset-rate.rate-interval` and `coordinator.trigger-check-interval` first — they are what the detection latency is actually made of; `rebalance-min-violated-checks` buys little, because the weight store already averages over its own window and consecutive checks are correlated samples of it.
+
+Note that `consumer-balancer.rebalance-load-imbalance-threshold` stays tight (`1.1`) on purpose. It is tempting to raise it as a storm guard, but the cooldown backoff already bounds what a false positive costs, whereas a raised threshold silently loses real corrections — one badly placed hot partition often shows up as only a 10–20% instance-level skew.
 
 ## Multiple Kafka clusters
 
@@ -180,9 +188,9 @@ Every bean of the proactive path — `MemberIdTracker`, `RebalanceTrigger`, `Coo
 |----------|---------|-------------|
 | `consumer-balancer.enabled` | `true` | Master switch for balancer auto-configuration. |
 | `consumer-balancer.proactive-rebalance-enabled` | `true` | When `true`, one elected consumer runs the threshold trigger and may call `enforceRebalance()` on listener containers. |
-| `consumer-balancer.rebalance-load-imbalance-threshold` | `1.2` | Proactive rebalance when `(max instance load) / (optimal max instance load) > threshold` (see [Proactive rebalance](#proactive-rebalance)). |
+| `consumer-balancer.rebalance-load-imbalance-threshold` | `1.1` | Proactive rebalance when `(max instance load) / (optimal max instance load) > threshold` (see [Proactive rebalance](#proactive-rebalance)). |
 | `consumer-balancer.instance-id` | *(auto)* | Application-instance id shared by every consumer in this JVM; members reporting the same id are balanced as one instance. Default: a random id generated once per JVM. |
-| `consumer-balancer.rebalance-min-violated-checks` | `3` | Consecutive trigger checks that must see the imbalance on one unchanged assignment before a rebalance is fired. `1` fires on first sight. |
+| `consumer-balancer.rebalance-min-violated-checks` | `2` | Trigger checks that must see the imbalance on one unchanged assignment before a rebalance is fired; a balanced check decays the count by one. `1` fires on first sight. |
 | `consumer-balancer.rebalance-cooldown` | `10m` | Minimum time between two proactive rebalances, regardless of whether the previous one changed anything. `0` disables the cooldown and its backoff. |
 | `consumer-balancer.rebalance-max-cooldown` | `2h` | Ceiling for the cooldown after it has been doubled by rebalances that did not restore balance. Must not be shorter than `rebalance-cooldown`. |
 | `consumer-balancer.listener-ids` | *(empty)* | Listener container ids the proactive rebalance may touch; empty means every registered container of the group id. Set it when several Kafka clusters share the group id — see [Multiple Kafka clusters](#multiple-kafka-clusters). |

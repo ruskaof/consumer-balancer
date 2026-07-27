@@ -36,11 +36,12 @@ public class KafkaBalancerProperties {
 
     /**
      * Fire proactive rebalance when (max instance load / optimal max instance load)
-     * exceeds this value. Keep it clear of the noise floor: the trigger measures weights
-     * locally while the assignment was computed from the group leader's own measurements,
-     * so a few percent of disagreement is normal even for a perfectly balanced group.
+     * exceeds this value. It can stay this tight because the rebalance-cooldown backoff,
+     * not the threshold, is what bounds the cost of a false positive: raising it instead
+     * silently loses real corrections, since a badly placed hot partition often shows up
+     * as only a 10-20% instance-level skew.
      */
-    private double rebalanceLoadImbalanceThreshold = 1.2d;
+    private double rebalanceLoadImbalanceThreshold = 1.1d;
 
     /**
      * Application-instance id shared by every consumer in this JVM (pod). Members
@@ -53,9 +54,10 @@ public class KafkaBalancerProperties {
     private String instanceId;
 
     /**
-     * How many consecutive trigger checks must see the imbalance on one unchanged
-     * assignment before a proactive rebalance is fired. Filters out single noisy weight
-     * samples; 1 fires on first sight.
+     * How many trigger checks must see the imbalance on one unchanged assignment before a
+     * proactive rebalance is fired. Filters out single noisy weight samples; 1 fires on
+     * first sight. A check that finds the group balanced decays the count instead of
+     * resetting it, so a ratio drifting across the threshold still converges on a decision.
      */
     private int rebalanceMinViolatedChecks = RebalanceDamping.DEFAULT_MIN_VIOLATED_CHECKS;
 

@@ -80,11 +80,18 @@ Expect **few** of those lines: the trigger waits for the imbalance to hold acros
 `rebalance-min-violated-checks` checks and never fires twice within
 `rebalance-cooldown`, so one correction per shift is the intended picture — a
 burst would mean the trigger and the assignor disagree, not that the group is
-being balanced harder. The graph above predates those guards. Because the run is
-only 10 minutes and the hotspot moves halfway through, the harness shortens
-`rebalance-cooldown` to `1m` for `listener-balanced` (see
-[`docker-compose.yaml`](../../docker/docker-compose.yaml)); the library default is
-`10m`.
+being balanced harder. The graph above predates those guards.
+
+The harness runs `listener-balanced` with a **shorter reaction time** than the
+library defaults (see [`docker-compose.yaml`](../../docker/docker-compose.yaml)):
+`offset-rate.rate-interval` `30s`, `coordinator.trigger-check-interval` `10s`,
+`rebalance-cooldown` `1m`, against defaults of `1m` / `30s` / `10m`. Those three
+are what the detect-and-correct latency is made of — the weight window has to
+catch up to the new load, the imbalance has to be confirmed, and the correction
+has to land early enough for the graph to show re-convergence. With the defaults
+that cycle takes ~2 minutes, which is fine for load that drifts over tens of
+minutes but eats most of a 300-second iteration. The defaults are the right
+production setting; these are the right *experiment* setting.
 
 ---
 

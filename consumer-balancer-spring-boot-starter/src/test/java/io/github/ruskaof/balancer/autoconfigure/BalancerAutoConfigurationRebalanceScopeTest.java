@@ -53,7 +53,7 @@ class BalancerAutoConfigurationRebalanceScopeTest {
         KafkaBalancerProperties properties = new KafkaBalancerProperties();
 
         assertThat(properties.getListenerIds()).isEmpty();
-        assertThat(properties.getRebalanceLoadImbalanceThreshold()).isEqualTo(1.2d);
+        assertThat(properties.getRebalanceLoadImbalanceThreshold()).isEqualTo(1.1d);
         assertThat(properties.toRebalanceDamping()).isEqualTo(RebalanceDamping.defaults());
     }
 

@@ -87,9 +87,15 @@ services:
       KAFKA_ASSIGNMENT_STRATEGY: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
       KAFKA_CONSUMER_GROUP: listener-balanced
       KAFKA_BALANCER_ENABLED: true
-      # The run lasts 10 minutes and shifts the load skew halfway through, so the default
-      # 10m cooldown between proactive rebalances would hide the second correction. This is
-      # an experiment-sized value, not a recommendation — every fire stops the whole group.
+      # Experiment-sized reaction time, not a recommendation. The run is two 300s iterations
+      # and moves the hotspot between them, so the whole detect-and-correct cycle has to fit
+      # in a couple of minutes: the weight window must catch up to the new load (rate
+      # interval), the imbalance must be confirmed (check interval x min-violated-checks),
+      # and the correction must still be visible before the run ends (cooldown). The library
+      # defaults are 1m/30s/10m — tuned for slow drift, where every fire is a stop-the-world
+      # pause for the whole group.
+      OFFSET_RATE_INTERVAL: 30s
+      TRIGGER_CHECK_INTERVAL: 10s
       REBALANCE_COOLDOWN: 1m
     networks:
       - backend

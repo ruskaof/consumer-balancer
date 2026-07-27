@@ -37,7 +37,7 @@ report to the assignor); members with a blank host count as their own instances.
 The imbalance is:
 
 ```
-currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.2)
+currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.1)
 ```
 
 Seeing that once is *not* enough to fire. The trigger judges the group from the
@@ -51,8 +51,11 @@ guards (`RebalanceDamping`) bound the rebalance rate:
   on, because the AdminClient then reports partial or previous-generation
   assignments and firing on those re-fires on the rebalance just caused;
 - **hysteresis** — the imbalance must hold for
-  `consumer-balancer.rebalance-min-violated-checks` consecutive checks of one
-  unchanged assignment (default `3`);
+  `consumer-balancer.rebalance-min-violated-checks` checks of one unchanged
+  assignment (default `2`). A balanced check decays that count by one rather than
+  resetting it, so the ratio drifting across the threshold — which is exactly what
+  happens while the weight window still spans the load being replaced — still
+  converges on a decision;
 - **cooldown with backoff** — fires are at least
   `consumer-balancer.rebalance-cooldown` apart (default `10m`) whatever happened
   in between, and each fire that does not restore balance doubles that distance

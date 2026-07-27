@@ -144,7 +144,7 @@ class ThresholdTriggerTest {
     }
 
     @Test
-    void needsTheImbalanceOnConsecutiveChecksOfOneAssignment() {
+    void needsTheImbalanceOnSeveralChecksOfOneAssignment() {
         stubImbalancedGroup();
         weighImbalanced();
         ThresholdTrigger trigger = trigger(new RebalanceDamping(3, Duration.ZERO, Duration.ZERO));
@@ -171,7 +171,27 @@ class ThresholdTriggerTest {
     }
 
     @Test
-    void restartsTheStreakWhenACheckIsWithinThreshold() {
+    void decaysRatherThanResetsTheStreakOnACheckWithinThreshold() {
+        // While the weight window still spans the load that has just been replaced, the ratio
+        // drifts across the threshold. Resetting on every dip would restart the count exactly
+        // when the trigger is most needed, so a balanced check only walks it back one step.
+        stubImbalancedGroup();
+        weighImbalanced();
+        ThresholdTrigger trigger = trigger(new RebalanceDamping(3, Duration.ZERO, Duration.ZERO));
+
+        assertFalse(trigger.shouldTrigger(), "1 of 3 checks");
+        assertFalse(trigger.shouldTrigger(), "2 of 3 checks");
+
+        stubBalancedGroup();
+        assertFalse(trigger.shouldTrigger(), "within threshold: the count decays to 1");
+
+        stubImbalancedGroup();
+        assertFalse(trigger.shouldTrigger(), "2 of 3 checks");
+        assertTrue(trigger.shouldTrigger(), "3 of 3 checks");
+    }
+
+    @Test
+    void windsTheStreakDownWhenTheGroupStaysBalanced() {
         stubImbalancedGroup();
         weighImbalanced();
         ThresholdTrigger trigger = trigger(new RebalanceDamping(2, Duration.ZERO, Duration.ZERO));
@@ -179,10 +199,11 @@ class ThresholdTriggerTest {
         assertFalse(trigger.shouldTrigger(), "1 of 2 checks");
 
         stubBalancedGroup();
-        assertFalse(trigger.shouldTrigger(), "within threshold");
+        assertFalse(trigger.shouldTrigger(), "the count decays to 0");
+        assertFalse(trigger.shouldTrigger(), "and stays there");
 
         stubImbalancedGroup();
-        assertFalse(trigger.shouldTrigger(), "the streak starts over: 1 of 2 checks");
+        assertFalse(trigger.shouldTrigger(), "1 of 2 checks again");
         assertTrue(trigger.shouldTrigger(), "2 of 2 checks");
     }
 

@@ -39,8 +39,8 @@ class RebalanceDampingTest {
     }
 
     @Test
-    void defaultsAreThreeChecksAndATenMinuteCooldown() {
-        assertEquals(new RebalanceDamping(3, Duration.ofMinutes(10), Duration.ofHours(2)),
+    void defaultsAreTwoChecksAndATenMinuteCooldown() {
+        assertEquals(new RebalanceDamping(2, Duration.ofMinutes(10), Duration.ofHours(2)),
                 RebalanceDamping.defaults());
     }
 }

@@ -11,9 +11,12 @@ import java.util.Objects;
  *
  * <p>Two independent limits prevent that:
  * <ul>
- *   <li>{@code minViolatedChecks} — how long the imbalance must persist (in consecutive
- *       checks on one unchanged assignment) before it counts as real rather than as
- *       measurement noise;</li>
+ *   <li>{@code minViolatedChecks} — how long the imbalance must persist (in checks on one
+ *       unchanged assignment) before it counts as real rather than as measurement noise. The
+ *       count decays rather than resets on a check that finds the group balanced, so a ratio
+ *       drifting across the threshold still converges on a decision. Keep it low: the weight
+ *       store already averages over its own window, so consecutive checks are correlated
+ *       samples, and every check spent confirming is a check the imbalance goes uncorrected;</li>
  *   <li>{@code cooldown} — a hard floor on the wall-clock time between two fires. It applies
  *       whether or not the previous rebalance changed anything, which is what bounds the
  *       damage when the trigger's model of the group disagrees with the assignor's. Each fire
@@ -22,8 +25,8 @@ import java.util.Objects;
  *       churning; the cooldown returns to its base as soon as the group is seen balanced.</li>
  * </ul>
  *
- * @param minViolatedChecks consecutive checks that must see the imbalance on one unchanged
- *                          assignment before the trigger fires; {@code 1} fires on first sight
+ * @param minViolatedChecks checks that must see the imbalance on one unchanged assignment
+ *                          before the trigger fires; {@code 1} fires on first sight
  * @param cooldown          minimum time between two fires; {@link Duration#ZERO} disables
  *                          both the cooldown and its backoff
  * @param maxCooldown       ceiling for the doubled cooldown; must not be shorter than
@@ -31,7 +34,7 @@ import java.util.Objects;
  */
 public record RebalanceDamping(int minViolatedChecks, Duration cooldown, Duration maxCooldown) {
 
-    public static final int DEFAULT_MIN_VIOLATED_CHECKS = 3;
+    public static final int DEFAULT_MIN_VIOLATED_CHECKS = 2;
     public static final Duration DEFAULT_COOLDOWN = Duration.ofMinutes(10);
     public static final Duration DEFAULT_MAX_COOLDOWN = Duration.ofHours(2);
 
@@ -51,7 +54,7 @@ public record RebalanceDamping(int minViolatedChecks, Duration cooldown, Duratio
         }
     }
 
-    /** Three consecutive violated checks, a 10 minute cooldown backing off to 2 hours. */
+    /** Two violated checks, a 10 minute cooldown backing off to 2 hours. */
     public static RebalanceDamping defaults() {
         return new RebalanceDamping(DEFAULT_MIN_VIOLATED_CHECKS, DEFAULT_COOLDOWN, DEFAULT_MAX_COOLDOWN);
     }

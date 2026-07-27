@@ -211,9 +211,18 @@ public class ThresholdTrigger implements RebalanceTrigger {
      * The group is within threshold. Once that holds for as many checks as a violation needs
      * to fire, the imbalance counts as resolved: the cooldown backoff is wound back so the
      * next genuine imbalance is reacted to promptly.
+     *
+     * <p>The two counters are deliberately asymmetric. The violation streak only <em>decays</em>
+     * here, because the ratio ramps through the threshold while the weight window still spans
+     * the old load: resetting it on the first dip would restart the count over and over exactly
+     * when the load has just shifted, which is when the trigger is most needed. The relief
+     * counter, in contrast, is hard-reset by any violation — the cooldown backoff should be
+     * quick to arm and slow to disarm.
      */
     private void onBalanced() {
-        violatedChecks = 0;
+        if (violatedChecks > 0) {
+            violatedChecks--;
+        }
         if (balancedChecks < damping.minViolatedChecks()) {
             balancedChecks++;
         }
@@ -237,11 +246,14 @@ public class ThresholdTrigger implements RebalanceTrigger {
         balancedChecks = 0;
 
         Map<String, Set<TopicPartition>> fingerprint = fingerprintOf(currentAssignment);
-        // A streak only means something while it describes one and the same assignment.
-        violatedChecks = fingerprint.equals(lastCheckedAssignment)
-                ? Math.min(violatedChecks + 1, damping.minViolatedChecks())
-                : 1;
+        // A streak only means something while it describes one and the same assignment, so a
+        // moved partition starts the count over — unlike a merely balanced check, which only
+        // decays it (see onBalanced).
+        if (!fingerprint.equals(lastCheckedAssignment)) {
+            violatedChecks = 0;
+        }
         lastCheckedAssignment = fingerprint;
+        violatedChecks = Math.min(violatedChecks + 1, damping.minViolatedChecks());
 
         log.info("ThresholdTrigger evaluated [group={}]: currentMaxLoadedInstance={}, "
                         + "optimalMaxLoadedInstance={}, ratio={}, threshold={}, violated=true ({}/{} checks)",
