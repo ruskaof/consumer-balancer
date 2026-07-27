@@ -2,13 +2,16 @@ package io.github.ruskaof.balancer.trigger.threshold;
 
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
+import io.github.ruskaof.balancer.trigger.RebalanceDamping;
 import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
 import io.github.ruskaof.balancer.weight.PartitionWeightDefaults;
 import io.github.ruskaof.balancer.weight.PartitionWeights;
 import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.admin.MemberDescription;
+import org.apache.kafka.common.GroupState;
 import org.apache.kafka.common.TopicPartition;
 
 import java.time.Clock;
@@ -21,34 +24,61 @@ import java.util.concurrent.TimeUnit;
  * Fires when the most loaded application instance carries more than {@code threshold} times
  * the load it would carry under the optimal assignment computed from current weights.
  *
- * <p>The admin API does not expose the instance ids members report to the assignor, so
- * members are grouped by {@link MemberDescription#host()}: members of one pod share the
- * broker-observed client address, and Kubernetes pod IPs are unique. Members with a blank
- * host count as their own instances. This approximation can disagree with the assignor's
- * grouping (a custom instance-id scheme not aligned with hosts, pods on the host network
- * sharing a node IP, a group mid-upgrade); because the assignor is deterministic, such a
- * disagreement would re-fire a useless rebalance every check — so a violation observed on
- * the exact assignment this trigger already fired on is suppressed for
- * {@code refireSuppression} (pass {@link Duration#ZERO} to disable suppression).
+ * <p>The trigger observes the group from the outside, through the admin API, and that view is
+ * necessarily an approximation of what the assignor sees:
+ * <ul>
+ *   <li>the admin API does not expose the instance ids members report to the assignor, so
+ *       members are grouped by {@link MemberDescription#host()} — members of one pod share the
+ *       broker-observed client address, and Kubernetes pod IPs are unique. Members with a
+ *       blank host count as their own instances;</li>
+ *   <li>the admin API does not expose member subscriptions either, so every member is treated
+ *       as eligible for every topic in the group. That matches the instance-level load this
+ *       trigger compares as long as every instance runs the whole set of listeners;</li>
+ *   <li>weights are measured locally, while the assignment was computed from the group
+ *       leader's own — equally valid but not identical — measurements.</li>
+ * </ul>
+ *
+ * <p>Each of those can make the computed optimum unreachable, and because the assignor is
+ * deterministic an unreachable optimum would re-fire a useless rebalance on every check. Three
+ * guards keep that from becoming a rebalance storm:
+ * <ol>
+ *   <li><b>Stable groups only.</b> While the group is rebalancing, the admin API reports
+ *       partial or stale assignments; judging those would fire again on the rebalance this
+ *       trigger just caused, which is a self-sustaining loop. Non-stable checks are skipped
+ *       without touching any of the state below.</li>
+ *   <li><b>Hysteresis.</b> The imbalance must be seen on
+ *       {@link RebalanceDamping#minViolatedChecks()} consecutive checks of one unchanged
+ *       assignment, so a single noisy weight sample cannot rebalance the group.</li>
+ *   <li><b>Cooldown with backoff.</b> Two fires are never closer together than
+ *       {@link RebalanceDamping#cooldown()}, and every fire that does not restore balance
+ *       doubles that distance up to {@link RebalanceDamping#maxCooldown()}.</li>
+ * </ol>
  */
 @Slf4j
 public class ThresholdTrigger implements RebalanceTrigger {
 
-    public static final Duration DEFAULT_REFIRE_SUPPRESSION = Duration.ofMinutes(10);
-
     private static final long DESCRIBE_TIMEOUT_MS = 30_000L;
+
+    private static final String LIKELY_CAUSES = "Likely causes: an instance id per member that does not match client"
+            + " hosts, several instances sharing one host, instances running different sets of listeners, or an"
+            + " imbalance the assignor cannot improve on with its own weight measurements.";
 
     private final AdminClient adminClient;
     private final String groupId;
     private final WeightService weightService;
     private final double threshold;
     private final BalanceService balanceService;
-    private final Duration refireSuppression;
+    private final RebalanceDamping damping;
     private final Clock clock;
 
-    // Thread-confined to the coordinator's scheduler thread.
-    private Map<String, Set<TopicPartition>> lastFiredAssignment;
+    // All mutable state is thread-confined to the coordinator's scheduler thread.
+    private Map<String, Set<TopicPartition>> lastCheckedAssignment;
+    private int violatedChecks;
+    private int balancedChecks;
+    private int cooldownDoublings;
+    private boolean balancedSinceLastFire = true;
     private Instant lastFiredAt;
+    private boolean warnedAboutMissingGroupState;
 
     public ThresholdTrigger(
             AdminClient adminClient,
@@ -56,15 +86,15 @@ public class ThresholdTrigger implements RebalanceTrigger {
             WeightService weightService,
             double threshold,
             BalanceService balanceService,
-            Duration refireSuppression,
+            RebalanceDamping damping,
             Clock clock) {
-        this.adminClient = adminClient;
-        this.groupId = groupId;
-        this.weightService = weightService;
+        this.adminClient = Objects.requireNonNull(adminClient, "adminClient");
+        this.groupId = Objects.requireNonNull(groupId, "groupId");
+        this.weightService = Objects.requireNonNull(weightService, "weightService");
         this.threshold = threshold;
-        this.balanceService = balanceService;
-        this.refireSuppression = refireSuppression;
-        this.clock = clock;
+        this.balanceService = Objects.requireNonNull(balanceService, "balanceService");
+        this.damping = Objects.requireNonNull(damping, "damping");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     @Override
@@ -76,8 +106,13 @@ public class ThresholdTrigger implements RebalanceTrigger {
                     .get(groupId)
                     .get(DESCRIBE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
 
+            if (!isStable(groupDescription)) {
+                return false;
+            }
+
             if (groupDescription.members().isEmpty()) {
-                log.info("ThresholdTrigger evaluated [group={}]: no members, shouldTrigger=false", groupId);
+                log.debug("ThresholdTrigger evaluated [group={}]: no members, shouldTrigger=false", groupId);
+                violatedChecks = 0;
                 return false;
             }
 
@@ -113,40 +148,31 @@ public class ThresholdTrigger implements RebalanceTrigger {
                     groupByInstance(optimalAssignment, instanceKeyByMember), weights);
 
             if (optimalMaxLoaded == null || currentMaxLoaded == null) {
-                log.info("ThresholdTrigger evaluated [group={}]: no members with assignments, shouldTrigger=false",
+                log.debug("ThresholdTrigger evaluated [group={}]: no members with assignments, shouldTrigger=false",
                         groupId);
+                violatedChecks = 0;
                 return false;
             }
             if (optimalMaxLoaded.load <= 0.0) {
                 // All weights are zero; there is no imbalance to fix.
-                log.info("ThresholdTrigger evaluated [group={}]: all partition weights are zero, shouldTrigger=false",
+                log.debug("ThresholdTrigger evaluated [group={}]: all partition weights are zero, shouldTrigger=false",
                         groupId);
+                onBalanced();
                 return false;
             }
 
             double ratio = currentMaxLoaded.load / optimalMaxLoaded.load;
             boolean violated = ratio > threshold;
 
-            log.info("ThresholdTrigger evaluated [group={}]: currentMaxLoadedInstance={}, "
-                            + "optimalMaxLoadedInstance={}, ratio={}, threshold={}, violated={}",
-                    groupId, currentMaxLoaded, optimalMaxLoaded, ratio, threshold, violated);
             if (!violated) {
+                log.debug("ThresholdTrigger evaluated [group={}]: currentMaxLoadedInstance={}, "
+                                + "optimalMaxLoadedInstance={}, ratio={}, threshold={}, violated=false",
+                        groupId, currentMaxLoaded, optimalMaxLoaded, ratio, threshold);
+                onBalanced();
                 return false;
             }
 
-            Map<String, Set<TopicPartition>> fingerprint = fingerprintOf(currentAssignment);
-            if (fingerprint.equals(lastFiredAssignment)
-                    && clock.instant().isBefore(lastFiredAt.plus(refireSuppression))) {
-                log.warn("ThresholdTrigger [group={}]: the assignment is unchanged since the rebalance this "
-                        + "trigger initiated but still violates the threshold; suppressing to avoid a "
-                        + "rebalance loop. Likely causes: a custom instance id per member not matching "
-                        + "client hosts, several instances sharing one host, or a group mid-upgrade.",
-                        groupId);
-                return false;
-            }
-            lastFiredAssignment = fingerprint;
-            lastFiredAt = clock.instant();
-            return true;
+            return onViolated(currentAssignment, currentMaxLoaded, optimalMaxLoaded, ratio);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Interrupted while running ThresholdTrigger", e);
@@ -155,6 +181,128 @@ public class ThresholdTrigger implements RebalanceTrigger {
             log.error("Could not run ThresholdTrigger", e);
             return false;
         }
+    }
+
+    /**
+     * Only a stable group has assignments worth judging. While it rebalances, members report
+     * the assignment of the previous generation, an empty one, or a mixture of both — and
+     * acting on that would keep re-firing on the very rebalance this trigger initiated.
+     */
+    private boolean isStable(ConsumerGroupDescription groupDescription) {
+        GroupState state = groupDescription.groupState();
+        if (state == GroupState.STABLE) {
+            warnedAboutMissingGroupState = false;
+            return true;
+        }
+        if (state == null || state == GroupState.UNKNOWN) {
+            // Permanent for a broker that does not report the state, so say it once.
+            if (!warnedAboutMissingGroupState) {
+                warnedAboutMissingGroupState = true;
+                log.warn("ThresholdTrigger [group={}]: the broker did not report a group state, so the group cannot be"
+                        + " checked for imbalance. Proactive rebalance stays off for this group.", groupId);
+            }
+        } else {
+            log.debug("ThresholdTrigger skipped [group={}]: group state is {}, not STABLE", groupId, state);
+        }
+        return false;
+    }
+
+    /**
+     * The group is within threshold. Once that holds for as many checks as a violation needs
+     * to fire, the imbalance counts as resolved: the cooldown backoff is wound back so the
+     * next genuine imbalance is reacted to promptly.
+     *
+     * <p>The two counters are deliberately asymmetric. The violation streak only <em>decays</em>
+     * here, because the ratio ramps through the threshold while the weight window still spans
+     * the old load: resetting it on the first dip would restart the count over and over exactly
+     * when the load has just shifted, which is when the trigger is most needed. The relief
+     * counter, in contrast, is hard-reset by any violation — the cooldown backoff should be
+     * quick to arm and slow to disarm.
+     */
+    private void onBalanced() {
+        if (violatedChecks > 0) {
+            violatedChecks--;
+        }
+        if (balancedChecks < damping.minViolatedChecks()) {
+            balancedChecks++;
+        }
+        if (balancedChecks >= damping.minViolatedChecks() && !balancedSinceLastFire) {
+            log.info("ThresholdTrigger [group={}]: the group is balanced again; resetting the rebalance cooldown to {}",
+                    groupId, damping.cooldown());
+            balancedSinceLastFire = true;
+            cooldownDoublings = 0;
+        }
+    }
+
+    /**
+     * The group is out of threshold: count the violation against the hysteresis, then against
+     * the cooldown, and only fire when both allow it.
+     */
+    private boolean onViolated(
+            Map<String, List<TopicPartition>> currentAssignment,
+            InstanceLoad currentMaxLoaded,
+            InstanceLoad optimalMaxLoaded,
+            double ratio) {
+        balancedChecks = 0;
+
+        Map<String, Set<TopicPartition>> fingerprint = fingerprintOf(currentAssignment);
+        // A streak only means something while it describes one and the same assignment, so a
+        // moved partition starts the count over — unlike a merely balanced check, which only
+        // decays it (see onBalanced).
+        if (!fingerprint.equals(lastCheckedAssignment)) {
+            violatedChecks = 0;
+        }
+        lastCheckedAssignment = fingerprint;
+        violatedChecks = Math.min(violatedChecks + 1, damping.minViolatedChecks());
+
+        log.info("ThresholdTrigger evaluated [group={}]: currentMaxLoadedInstance={}, "
+                        + "optimalMaxLoadedInstance={}, ratio={}, threshold={}, violated=true ({}/{} checks)",
+                groupId, currentMaxLoaded, optimalMaxLoaded, ratio, threshold,
+                violatedChecks, damping.minViolatedChecks());
+
+        if (violatedChecks < damping.minViolatedChecks()) {
+            return false;
+        }
+
+        Instant now = clock.instant();
+        Duration cooldown = cooldown();
+        if (lastFiredAt != null && now.isBefore(lastFiredAt.plus(cooldown))) {
+            log.info("ThresholdTrigger [group={}]: imbalance confirmed but the last proactive rebalance was {} ago"
+                            + " and the cooldown is {}; not rebalancing yet",
+                    groupId, Duration.between(lastFiredAt, now), cooldown);
+            return false;
+        }
+
+        if (!balancedSinceLastFire && lastFiredAt != null && !cooldown.isZero()) {
+            // The previous rebalance did not bring the group within threshold, so repeating it
+            // at the same rate would just churn the group.
+            Duration sinceLastFire = Duration.between(lastFiredAt, now);
+            if (cooldown.compareTo(damping.maxCooldown()) < 0) {
+                cooldownDoublings++;
+                log.warn("ThresholdTrigger [group={}]: the proactive rebalance {} ago did not bring the group within"
+                                + " the threshold, so the cooldown grows from {} to {}. {}",
+                        groupId, sinceLastFire, cooldown, cooldown(), LIKELY_CAUSES);
+            } else {
+                log.warn("ThresholdTrigger [group={}]: the proactive rebalance {} ago did not bring the group within"
+                                + " the threshold either; the cooldown stays at its maximum {}. {}",
+                        groupId, sinceLastFire, cooldown, LIKELY_CAUSES);
+            }
+        }
+
+        balancedSinceLastFire = false;
+        lastFiredAt = now;
+        violatedChecks = 0;
+        return true;
+    }
+
+    /** The base cooldown doubled once per ineffective fire, capped at the configured maximum. */
+    private Duration cooldown() {
+        Duration base = damping.cooldown();
+        if (base.isZero() || cooldownDoublings == 0) {
+            return base;
+        }
+        Duration scaled = base.multipliedBy(1L << cooldownDoublings);
+        return scaled.compareTo(damping.maxCooldown()) > 0 ? damping.maxCooldown() : scaled;
     }
 
     /** Members of one pod share the broker-observed client host; blank hosts stay singletons. */

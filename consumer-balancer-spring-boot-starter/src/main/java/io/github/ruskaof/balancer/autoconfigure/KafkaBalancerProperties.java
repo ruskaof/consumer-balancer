@@ -1,9 +1,11 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
-import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
+import io.github.ruskaof.balancer.trigger.RebalanceDamping;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 @ConfigurationProperties(prefix = "consumer-balancer")
 public class KafkaBalancerProperties {
@@ -34,7 +36,10 @@ public class KafkaBalancerProperties {
 
     /**
      * Fire proactive rebalance when (max instance load / optimal max instance load)
-     * exceeds this value.
+     * exceeds this value. It can stay this tight because the rebalance-cooldown backoff,
+     * not the threshold, is what bounds the cost of a false positive: raising it instead
+     * silently loses real corrections, since a badly placed hot partition often shows up
+     * as only a 10-20% instance-level skew.
      */
     private double rebalanceLoadImbalanceThreshold = 1.1d;
 
@@ -49,12 +54,37 @@ public class KafkaBalancerProperties {
     private String instanceId;
 
     /**
-     * After the threshold trigger fires, how long it refuses to fire again on an
-     * unchanged group assignment. This damps a rebalance loop when the trigger's
-     * host-based instance grouping disagrees with the assignor's reported instance
-     * ids. Zero disables suppression.
+     * How many trigger checks must see the imbalance on one unchanged assignment before a
+     * proactive rebalance is fired. Filters out single noisy weight samples; 1 fires on
+     * first sight. A check that finds the group balanced decays the count instead of
+     * resetting it, so a ratio drifting across the threshold still converges on a decision.
      */
-    private Duration rebalanceRefireSuppression = ThresholdTrigger.DEFAULT_REFIRE_SUPPRESSION;
+    private int rebalanceMinViolatedChecks = RebalanceDamping.DEFAULT_MIN_VIOLATED_CHECKS;
+
+    /**
+     * Minimum time between two proactive rebalances. Applies whether or not the previous
+     * rebalance changed the assignment, so it bounds the rebalance rate even when the
+     * trigger's view of the group disagrees with the assignor's. Zero disables the
+     * cooldown and its backoff.
+     */
+    private Duration rebalanceCooldown = RebalanceDamping.DEFAULT_COOLDOWN;
+
+    /**
+     * Ceiling for the cooldown. Every proactive rebalance that does not bring the group
+     * within the imbalance threshold doubles the cooldown up to this value; the cooldown
+     * returns to rebalance-cooldown as soon as the group is seen balanced.
+     */
+    private Duration rebalanceMaxCooldown = RebalanceDamping.DEFAULT_MAX_COOLDOWN;
+
+    /**
+     * Listener container ids the proactive rebalance may touch — the id of a
+     * {@code @KafkaListener}, or the bean name of a programmatically registered endpoint.
+     * Empty means every registered container of spring.kafka.consumer.group-id. Set it
+     * when the application consumes from several Kafka clusters under the same group id:
+     * the group id alone does not tell the clusters apart, so without it one cluster's
+     * trigger would rebalance the containers of all of them.
+     */
+    private List<String> listenerIds = new ArrayList<>();
 
     public boolean isEnabled() {
         return enabled;
@@ -108,12 +138,46 @@ public class KafkaBalancerProperties {
         this.instanceId = instanceId;
     }
 
-    public Duration getRebalanceRefireSuppression() {
-        return rebalanceRefireSuppression;
+    public int getRebalanceMinViolatedChecks() {
+        return rebalanceMinViolatedChecks;
     }
 
-    public void setRebalanceRefireSuppression(Duration rebalanceRefireSuppression) {
-        this.rebalanceRefireSuppression = rebalanceRefireSuppression;
+    public void setRebalanceMinViolatedChecks(int rebalanceMinViolatedChecks) {
+        this.rebalanceMinViolatedChecks = rebalanceMinViolatedChecks;
+    }
+
+    public Duration getRebalanceCooldown() {
+        return rebalanceCooldown;
+    }
+
+    public void setRebalanceCooldown(Duration rebalanceCooldown) {
+        this.rebalanceCooldown = rebalanceCooldown;
+    }
+
+    public Duration getRebalanceMaxCooldown() {
+        return rebalanceMaxCooldown;
+    }
+
+    public void setRebalanceMaxCooldown(Duration rebalanceMaxCooldown) {
+        this.rebalanceMaxCooldown = rebalanceMaxCooldown;
+    }
+
+    public List<String> getListenerIds() {
+        return listenerIds;
+    }
+
+    public void setListenerIds(List<String> listenerIds) {
+        this.listenerIds = listenerIds;
+    }
+
+    /**
+     * The trigger reluctance built from the rebalance-* properties.
+     *
+     * @throws IllegalArgumentException when the values do not form a usable policy, e.g.
+     *                                  rebalance-max-cooldown below rebalance-cooldown
+     */
+    public RebalanceDamping toRebalanceDamping() {
+        return new RebalanceDamping(rebalanceMinViolatedChecks, rebalanceCooldown, rebalanceMaxCooldown);
     }
 
     public enum WeightStore {

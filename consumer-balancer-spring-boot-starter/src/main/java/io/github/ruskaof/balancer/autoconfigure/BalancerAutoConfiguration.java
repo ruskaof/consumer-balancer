@@ -22,8 +22,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 
 import java.time.Clock;
-import java.util.Set;
-import java.util.function.Supplier;
+import java.util.List;
 
 @AutoConfiguration(after = {
         DefaultBalanceServiceAutoConfiguration.class,
@@ -66,21 +65,20 @@ public class BalancerAutoConfiguration {
                 kafkaBalancerProperties.getInstanceId());
     }
 
+    /**
+     * The proactive path for the consumer group of Spring Boot's auto-configured Kafka
+     * consumer. Every bean here backs off when the application defines its own, so a second
+     * Kafka cluster can be served by a hand-wired stack of the same beans — see the
+     * multi-cluster section of the README.
+     */
     @Configuration(proxyBeanMethods = false)
     @ConditionalOnProperty(name = "consumer-balancer.proactive-rebalance-enabled", havingValue = "true", matchIfMissing = true)
     static class ProactiveRebalanceConfiguration {
 
         @Bean
+        @ConditionalOnMissingBean(MemberIdTracker.class)
         public MemberIdTracker memberIdTracker() {
             return new MemberIdTracker();
-        }
-
-        @Bean
-        public Supplier<Set<String>> coordinatorMemberIdSupplier(
-                MemberIdTracker memberIdTracker,
-                KafkaProperties kafkaProperties) {
-            String groupId = requireConsumerGroupId(kafkaProperties);
-            return () -> memberIdTracker.getCurrentMemberIds(groupId);
         }
 
         @Bean
@@ -97,20 +95,32 @@ public class BalancerAutoConfiguration {
                     weightService,
                     kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
                     balanceService,
-                    kafkaBalancerProperties.getRebalanceRefireSuppression(),
+                    kafkaBalancerProperties.toRebalanceDamping(),
                     Clock.systemUTC());
         }
 
+        /**
+         * Rebalances the containers of the consumer group, restricted to
+         * {@code consumer-balancer.listener-ids} when set — the group id alone does not tell
+         * two Kafka clusters apart.
+         */
         @Bean
+        @ConditionalOnMissingBean(CoordinatorManager.RebalanceInitiator.class)
         public CoordinatorManager.RebalanceInitiator rebalanceInitiator(
                 KafkaListenerEndpointRegistry registry,
-                KafkaProperties kafkaProperties) {
-            return new ContainerRegistryRebalanceInitiator(registry, requireConsumerGroupId(kafkaProperties));
+                KafkaProperties kafkaProperties,
+                KafkaBalancerProperties kafkaBalancerProperties) {
+            String groupId = requireConsumerGroupId(kafkaProperties);
+            List<String> listenerIds = kafkaBalancerProperties.getListenerIds();
+            return listenerIds.isEmpty()
+                    ? new ContainerRegistryRebalanceInitiator(registry, groupId)
+                    : ContainerRegistryRebalanceInitiator.withListenerIds(registry, groupId, listenerIds);
         }
 
         @Bean
+        @ConditionalOnMissingBean(CoordinatorManager.class)
         public CoordinatorManager coordinatorManager(
-                Supplier<Set<String>> memberIdsSupplier,
+                MemberIdTracker memberIdTracker,
                 RebalanceTrigger trigger,
                 CoordinatorManager.RebalanceInitiator rebalanceInitiator,
                 KafkaBalancerProperties properties,
@@ -120,7 +130,7 @@ public class BalancerAutoConfiguration {
 
             CoordinatorElection election = new CoordinatorElection.Builder()
                     .setGroupId(groupId)
-                    .setMemberIdsSupplier(memberIdsSupplier)
+                    .setMemberIdsSupplier(() -> memberIdTracker.getCurrentMemberIds(groupId))
                     .setElectionIntervalMs(properties.getCoordinator().getElectionInterval().toMillis())
                     .setAdminClient(kafkaBalancerAdminClient)
                     .build();
@@ -133,6 +143,7 @@ public class BalancerAutoConfiguration {
         }
 
         @Bean
+        @ConditionalOnMissingBean(CoordinatorManagerLifecycle.class)
         public CoordinatorManagerLifecycle coordinatorManagerLifecycle(CoordinatorManager coordinatorManager) {
             return new CoordinatorManagerLifecycle(coordinatorManager);
         }

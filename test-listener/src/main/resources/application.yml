@@ -28,5 +28,11 @@ management:
 # Kafka AdminClient, so no Prometheus (or kafka-exporter) is needed for weights.
 consumer-balancer:
   enabled: ${KAFKA_BALANCER_ENABLED:true}
+  # Library defaults; the perftest compose file tightens the reaction time because its load
+  # shifts every 5 minutes, far faster than the drift the defaults are tuned for.
+  rebalance-cooldown: ${REBALANCE_COOLDOWN:10m}
+  rebalance-min-violated-checks: ${REBALANCE_MIN_VIOLATED_CHECKS:2}
+  coordinator:
+    trigger-check-interval: ${TRIGGER_CHECK_INTERVAL:30s}
   offset-rate:
     rate-interval: ${OFFSET_RATE_INTERVAL:1m}

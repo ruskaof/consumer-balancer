@@ -1,10 +1,11 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
-import io.github.ruskaof.balancer.MemberIdTracker;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
+import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 /**
  * The proactive path is on by default, so a missing spring.kafka.consumer.group-id must
@@ -17,7 +18,8 @@ class BalancerAutoConfigurationGroupIdTest {
         var configuration = new BalancerAutoConfiguration.ProactiveRebalanceConfiguration();
         KafkaProperties kafkaProperties = new KafkaProperties();
 
-        assertThatThrownBy(() -> configuration.coordinatorMemberIdSupplier(new MemberIdTracker(), kafkaProperties))
+        assertThatThrownBy(() -> configuration.rebalanceInitiator(
+                mock(KafkaListenerEndpointRegistry.class), kafkaProperties, new KafkaBalancerProperties()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("spring.kafka.consumer.group-id")
                 .hasMessageContaining("consumer-balancer.proactive-rebalance-enabled=false");
