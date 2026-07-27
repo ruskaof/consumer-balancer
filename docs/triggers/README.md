@@ -34,24 +34,38 @@ compares the **current** most-loaded application instance against the
 **optimal** most-loaded instance. Members are grouped into instances by their
 broker-observed client host (the AdminClient cannot see the instance ids members
 report to the assignor); members with a blank host count as their own instances.
-It fires when:
+The imbalance is:
 
 ```
-currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.1)
+currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.2)
 ```
 
-Because the assignor is deterministic, a grouping disagreement between the
-trigger (host-based) and the assignor (reported instance ids) would re-fire a
-useless rebalance on every check. The trigger therefore remembers the assignment
-it last fired on and, while it stays unchanged, suppresses further fires for
-`consumer-balancer.rebalance-refire-suppression` (default `10m`, `0` disables),
-logging a warning that names the likely cause.
+Seeing that once is *not* enough to fire. The trigger judges the group from the
+outside, so its instance grouping, its assumption that every member is eligible
+for every topic, and its own weight measurements can all differ from what the
+group leader used — which means the optimum it computes may be unreachable. An
+unreachable optimum asks for the same useless rebalance on every check, so three
+guards (`RebalanceDamping`) bound the rebalance rate:
+
+- **stable groups only** — a check landing mid-rebalance is skipped, never acted
+  on, because the AdminClient then reports partial or previous-generation
+  assignments and firing on those re-fires on the rebalance just caused;
+- **hysteresis** — the imbalance must hold for
+  `consumer-balancer.rebalance-min-violated-checks` consecutive checks of one
+  unchanged assignment (default `3`);
+- **cooldown with backoff** — fires are at least
+  `consumer-balancer.rebalance-cooldown` apart (default `10m`) whatever happened
+  in between, and each fire that does not restore balance doubles that distance
+  up to `consumer-balancer.rebalance-max-cooldown` (default `2h`), logging a
+  warning that names the likely cause. Seeing the group balanced winds the
+  cooldown back to its base.
 
 | Pros | Cons |
 | --- | --- |
 | Proactive: reacts to load skew *before* it turns into lag or latency. | Needs a working weight store (the default offset-rate store requires no extra infrastructure). |
 | Compares against the *best achievable* assignment, so it stays quiet when an imbalance is unavoidable (e.g. one dominant partition). | Heaviest trigger: admin describe + weight fetch + optimal computation on every check. |
 | Directly optimizes the thing you care about — balanced load. | Needs the threshold tuned to the workload. |
+| Bounded blast radius: a wrong verdict costs one rebalance, then backs off. | Correspondingly slow: a real imbalance takes `min-violated-checks` checks to act on. |
 
 ### `PeriodicTrigger`
 
@@ -71,7 +85,7 @@ only if all children fire) semantics.
 | Pros | Cons |
 | --- | --- |
 | Lets you express real policies, e.g. *"rebalance if load is imbalanced **or** it has been an hour"*, or *"only during the maintenance window **and** when imbalanced"*. | Only as good as the triggers it wraps. |
-| Keeps individual triggers small and single-purpose. | No built-in cooldown; rapid re-firing must be handled by the children. |
+| Keeps individual triggers small and single-purpose. | No built-in cooldown; rapid re-firing must be handled by the children (`ThresholdTrigger` brings its own, `PeriodicTrigger` is its own). |
 
 ### Extending
 

@@ -28,5 +28,9 @@ management:
 # Kafka AdminClient, so no Prometheus (or kafka-exporter) is needed for weights.
 consumer-balancer:
   enabled: ${KAFKA_BALANCER_ENABLED:true}
+  # Library defaults; the perftest compose file shortens the cooldown because its run is
+  # shorter than the production-grade 10m between proactive rebalances.
+  rebalance-cooldown: ${REBALANCE_COOLDOWN:10m}
+  rebalance-min-violated-checks: ${REBALANCE_MIN_VIOLATED_CHECKS:3}
   offset-rate:
     rate-interval: ${OFFSET_RATE_INTERVAL:1m}

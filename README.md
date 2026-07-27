@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:6.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:7.0.0")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:6.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:7.0.0")
 }
 ```
 
@@ -64,7 +64,7 @@ Snapshots partition end offsets through the Kafka AdminClient — on every weigh
 
 Notes:
 
-- The very first assignment after startup has no offset history yet, so every partition gets the default weight `1.0` (a count-balanced assignment); weights kick in once two snapshots at least ~`rate-interval` apart exist. With proactive rebalance on (the default), the group converges to a load-aware assignment automatically.
+- The very first assignment after startup has no offset history yet, so every partition gets the default weight `1.0` (a count-balanced assignment); weights kick in once two snapshots at least ~`rate-interval` apart exist. With proactive rebalance on (the default), the group converges to a load-aware assignment automatically, once the imbalance has held for `consumer-balancer.rebalance-min-violated-checks` checks.
 - Each instance measures independently from the same source (broker end offsets), so no shared metrics infrastructure is required.
 - Weights reflect the **produce** rate. If your per-event processing cost varies wildly per partition, consider the Prometheus store with a cost-based metric, or a custom `WeightService`.
 
@@ -119,7 +119,52 @@ The instance id resolves in this order:
 
 A member whose userData carries no readable instance id (e.g. an older library version during a rolling upgrade) is treated as its own single-member instance, so mixed-version groups keep working and converge once the rollout completes.
 
-The proactive `ThresholdTrigger` compares **instance-level** loads too. Because the AdminClient cannot see subscription userData, the trigger groups members by their broker-observed client host; whenever each JVM has its own address (one pod = one IP in Kubernetes) that is exactly the assignor's per-JVM grouping. When instance grouping does not align with client hosts (several JVMs on one machine, pods on the host network sharing a node IP), the trigger's view can disagree with the assignor's; a built-in guard then suppresses repeat rebalances on an unchanged assignment for `consumer-balancer.rebalance-refire-suppression` (default `10m`) instead of looping every check interval.
+The proactive `ThresholdTrigger` compares **instance-level** loads too — see [Proactive rebalance](#proactive-rebalance) for how it approximates instances and why it is deliberately slow to act.
+
+## Proactive rebalance
+
+One elected member (the coordinator) checks the group every `consumer-balancer.coordinator.trigger-check-interval` (default `30s`) and may force a rebalance. **Every proactive rebalance stops the whole group**, so the trigger is built to under-react rather than over-react.
+
+It has to be, because it watches the group from the *outside*, through the AdminClient, and that view is only an approximation of what the assignor sees:
+
+- **instances** — the AdminClient cannot read subscription userData, so members are grouped by their broker-observed client host. Whenever each JVM has its own address (one pod = one IP in Kubernetes) that is exactly the assignor's per-JVM grouping; several JVMs per machine or host-network pods make the two disagree.
+- **subscriptions** — the AdminClient cannot see them either, so every member counts as eligible for every topic in the group. That matches the instance-level load being compared as long as every instance runs the whole set of listeners, which is the normal case for identical replicas.
+- **weights** — the coordinator measures them itself, while the assignment it judges was computed from the group leader's own, equally valid, measurements taken at a different moment.
+
+Each of those can make the computed optimum unreachable — and since the assignor is deterministic, an unreachable optimum asks for the same useless rebalance on every check. Three guards keep that from becoming a rebalance storm:
+
+1. **Stable groups only.** While the group is rebalancing, the AdminClient reports partial or previous-generation assignments. Judging those would fire again on the rebalance the trigger has just caused, which is a self-sustaining loop. Non-stable checks are skipped entirely and do not even count toward the hysteresis below.
+2. **Hysteresis.** The imbalance must show up on `consumer-balancer.rebalance-min-violated-checks` consecutive checks *of one unchanged assignment* (default `3`, so ~90s at the default check interval) before it counts as real rather than as a noisy weight sample.
+3. **Cooldown with backoff.** Two rebalances are never closer together than `consumer-balancer.rebalance-cooldown` (default `10m`) — whether or not the previous one changed the assignment, which is what bounds the cost when the trigger and the assignor disagree. Every rebalance that does not bring the group within the threshold doubles the cooldown up to `consumer-balancer.rebalance-max-cooldown` (default `2h`), with a warning naming the likely causes; the cooldown returns to its base as soon as the group is seen balanced again.
+
+So a genuine, sustained imbalance is corrected within roughly two minutes, while a disagreement the assignor cannot resolve costs one rebalance and then fades to one attempt every two hours. If you want the group corrected more eagerly, lower `rebalance-cooldown` and `rebalance-min-violated-checks` — but do it knowing each fire is a stop-the-world pause for every consumer in the group.
+
+`consumer-balancer.rebalance-load-imbalance-threshold` (default `1.2`) must stay clear of the noise floor created by the third point above: with a threshold near `1.0` a perfectly balanced group still looks violated, and the guards above then turn that into one pointless rebalance per cooldown forever instead of none.
+
+## Multiple Kafka clusters
+
+The whole balancer stack is per-cluster: an admin client, a weight store, a `MemberIdTracker`, a coordinator election and a trigger all belong to exactly one cluster. The starter auto-configures that stack for Spring Boot's auto-configured consumer; a second cluster needs a second set, hand-wired next to the second `ConsumerFactory` and `KafkaListenerContainerFactory` you already define for it (exactly as with plain Spring for Apache Kafka). Every bean of the proactive path backs off when the application defines its own (`@ConditionalOnMissingBean`), so you can also replace pieces of the auto-configured stack instead of adding to it.
+
+One thing does **not** follow from the group id: **which containers belong to which cluster.** Applications normally reuse the same group id on every cluster, so a rebalance initiator selecting containers by group id alone would rebalance every cluster whenever one of them is imbalanced. Scope it by listener id:
+
+```yaml
+consumer-balancer:
+  listener-ids: [orders, payments]   # the @KafkaListener ids that consume from the auto-configured cluster
+```
+
+and give the second cluster's stack its own initiator:
+
+```java
+@Bean
+CoordinatorManager.RebalanceInitiator clusterBRebalanceInitiator(KafkaListenerEndpointRegistry registry) {
+    return ContainerRegistryRebalanceInitiator.withListenerIds(
+            registry, "my-group", List.of("ordersOnClusterB"));
+}
+```
+
+Listener ids are the only stable, publicly readable identity a `MessageListenerContainer` carries besides its group id, which is why they are the hook. Give the listeners explicit ids (`@KafkaListener(id = "orders", ...)`) — the generated ones are positional and not stable across refactorings. For anything else, `ContainerRegistryRebalanceInitiator` also accepts an arbitrary `Predicate<MessageListenerContainer>`.
+
+Give each cluster its own `MemberIdTracker` too (one per `ConsumerFactory`): the tracker keys member ids by group id, so sharing one instance between clusters that reuse a group id would pool member ids from both.
 
 ## Bean wiring
 
@@ -127,15 +172,20 @@ The starter injects the application context's `WeightService`, `BalanceService` 
 
 If you define your own `ConsumerFactory` bean, Boot's factory customizers do not run for it — set the `assignor.load-aware.*` keys on your factory yourself (the `BalancerConsumerFactoryCustomizer` bean can be applied manually).
 
+Every bean of the proactive path — `MemberIdTracker`, `RebalanceTrigger`, `CoordinatorManager.RebalanceInitiator`, `CoordinatorManager`, `CoordinatorManagerLifecycle` — is `@ConditionalOnMissingBean`, so defining your own replaces the auto-configured one rather than colliding with it. That is what makes a [second cluster's stack](#multiple-kafka-clusters) wirable by hand.
+
 ## Configuration reference (`consumer-balancer`)
 
 | Property | Default | Description |
 |----------|---------|-------------|
 | `consumer-balancer.enabled` | `true` | Master switch for balancer auto-configuration. |
 | `consumer-balancer.proactive-rebalance-enabled` | `true` | When `true`, one elected consumer runs the threshold trigger and may call `enforceRebalance()` on listener containers. |
-| `consumer-balancer.rebalance-load-imbalance-threshold` | `1.1` | Proactive rebalance when `(max instance load) / (optimal max instance load) > threshold` (see `ThresholdTrigger`). |
+| `consumer-balancer.rebalance-load-imbalance-threshold` | `1.2` | Proactive rebalance when `(max instance load) / (optimal max instance load) > threshold` (see [Proactive rebalance](#proactive-rebalance)). |
 | `consumer-balancer.instance-id` | *(auto)* | Application-instance id shared by every consumer in this JVM; members reporting the same id are balanced as one instance. Default: a random id generated once per JVM. |
-| `consumer-balancer.rebalance-refire-suppression` | `10m` | After the threshold trigger fires, how long it refuses to fire again on an unchanged group assignment (damps trigger/assignor disagreement loops). `0` disables suppression. |
+| `consumer-balancer.rebalance-min-violated-checks` | `3` | Consecutive trigger checks that must see the imbalance on one unchanged assignment before a rebalance is fired. `1` fires on first sight. |
+| `consumer-balancer.rebalance-cooldown` | `10m` | Minimum time between two proactive rebalances, regardless of whether the previous one changed anything. `0` disables the cooldown and its backoff. |
+| `consumer-balancer.rebalance-max-cooldown` | `2h` | Ceiling for the cooldown after it has been doubled by rebalances that did not restore balance. Must not be shorter than `rebalance-cooldown`. |
+| `consumer-balancer.listener-ids` | *(empty)* | Listener container ids the proactive rebalance may touch; empty means every registered container of the group id. Set it when several Kafka clusters share the group id — see [Multiple Kafka clusters](#multiple-kafka-clusters). |
 | `consumer-balancer.weight-store` | `offset-rate` | Built-in weight store to auto-configure: `offset-rate` or `prometheus`. Ignored when a custom `WeightService` bean is defined. |
 | `consumer-balancer.offset-rate.rate-interval` | `1m` | Window over which end-offset growth is turned into an events/sec weight. |
 | `consumer-balancer.offset-rate.sample-interval` | `rate-interval / 4` | How often end offsets are sampled in the background (default clamped between `1s` and `30s`). |
@@ -221,8 +271,9 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 - With the Prometheus store, your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. If your metrics use different label names (e.g. `kafka_topic`), set `consumer-balancer.prometheus.topic-label` / `partition-label` accordingly — remember the `by (...)` clause of the query must keep those labels. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
 - Partitions are assigned only to members subscribed to their topic, so groups whose members subscribe to different topic sets are handled correctly.
 - With more members than partitions, partitions spread evenly across **instances** (some members inside each instance stay idle); with fewer instances than partitions than members, every instance carries a near-equal share of the measured traffic. Instances receive equal traffic regardless of their member counts — an instance running fewer threads gets the same load on fewer, busier members.
-- The threshold trigger approximates instances by the broker-observed client host of each member. Whenever each JVM has its own address (one pod = one IP in Kubernetes), that induces exactly the assignor's per-JVM grouping. When instances share an address (several JVMs per machine, host-network pods), expect the refire-suppression guard to damp any trigger/assignor disagreement — a warning naming the cause is logged.
-- Proactive rebalance requires a group id in `spring.kafka.consumer.group-id`; only the listener containers of that group receive `enforceRebalance()`.
+- The threshold trigger approximates instances by the broker-observed client host of each member. Whenever each JVM has its own address (one pod = one IP in Kubernetes), that induces exactly the assignor's per-JVM grouping. When instances share an address (several JVMs per machine, host-network pods), or when instances run *different* sets of listeners, the trigger's view and the assignor's diverge; the cooldown backoff then fades the useless rebalances out and logs a warning naming the cause. See [Proactive rebalance](#proactive-rebalance).
+- The trigger only judges a **stable** group, so a check landing during a rebalance is skipped rather than acted on. Expect `ThresholdTrigger skipped ... group state is PREPARING_REBALANCE` at debug level around every rebalance.
+- Proactive rebalance requires a group id in `spring.kafka.consumer.group-id`; only the listener containers of that group — narrowed by `consumer-balancer.listener-ids` when set — receive `enforceRebalance()`. When no container matches, a warning is logged instead of silently doing nothing.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
 - `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed — along with the member-id tracking that proactive rebalance relies on.
 

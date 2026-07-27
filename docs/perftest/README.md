@@ -69,12 +69,22 @@ regenerates `test-out/` graphs for the current 6-partition setup.)*
 | --- | --- | --- |
 | **round-robin** | ~19 → ~99 msg/s (≈5× gap) | Heavily uneven. After the hotspot moves (~300 s) one instance spikes toward 99 msg/s while another collapses to ~19. |
 | **cooperative-sticky** | ~25 → ~75 msg/s (≈3× gap) | Also uneven — and because stickiness minimises partition movement, the imbalance gets *pinned in place* instead of being corrected. |
-| **load-aware (this library)** | ~50 → ~53 msg/s (near-flat) | All four instances track the group average. When the hotspot shifts it fires a burst of proactive rebalances (~300–390 s) and re-converges. |
+| **load-aware (this library)** | ~50 → ~53 msg/s (near-flat) | All four instances track the group average. When the hotspot shifts it proactively rebalances (~300–390 s) and re-converges. |
 
 The extra rebalances visible in the load-aware panel are the **proactive** ones:
-when the load distribution drifts past the imbalance threshold, the coordinator
-re-runs the assignor. The default groups only rebalance at startup, so once they
-land in an unbalanced state they stay there.
+when the load distribution drifts past the imbalance threshold and stays there,
+the coordinator re-runs the assignor. The default groups only rebalance at
+startup, so once they land in an unbalanced state they stay there.
+
+Expect **few** of those lines: the trigger waits for the imbalance to hold across
+`rebalance-min-violated-checks` checks and never fires twice within
+`rebalance-cooldown`, so one correction per shift is the intended picture — a
+burst would mean the trigger and the assignor disagree, not that the group is
+being balanced harder. The graph above predates those guards. Because the run is
+only 10 minutes and the hotspot moves halfway through, the harness shortens
+`rebalance-cooldown` to `1m` for `listener-balanced` (see
+[`docker-compose.yaml`](../../docker/docker-compose.yaml)); the library default is
+`10m`.
 
 ---
 
