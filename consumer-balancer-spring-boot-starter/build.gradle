@@ -14,8 +14,12 @@ dependencies {
     implementation libs.spring.boot.autoconfigure
     implementation libs.slf4j.api
     implementation libs.jackson.databind
+    // Optional metrics integration: compileOnly keeps Micrometer out of the published POM;
+    // meters bind only when the application brings micrometer-core itself (e.g. via actuator).
+    compileOnly libs.micrometer.core
     annotationProcessor libs.spring.boot.configuration.processor
     testImplementation libs.spring.boot.starter.test
+    testImplementation libs.micrometer.core
     testRuntimeOnly libs.junit.platform.launcher
 }
 

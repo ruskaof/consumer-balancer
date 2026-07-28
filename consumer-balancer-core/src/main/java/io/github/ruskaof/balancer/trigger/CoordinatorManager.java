@@ -53,6 +53,11 @@ public class CoordinatorManager implements AutoCloseable {
         election.start();
     }
 
+    /** Whether this JVM currently holds the coordinator role; safe to call from any thread. */
+    public boolean isCoordinator() {
+        return election.isCoordinator();
+    }
+
     private void onCoordinatorStatusChange(boolean isCoordinator) {
         if (isCoordinator && monitoring.compareAndSet(false, true)) {
             log.info("Became coordinator - starting trigger monitoring");
