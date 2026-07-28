@@ -24,6 +24,16 @@ public final class PartitionWeights {
     public static Map<TopicPartition, Double> sanitized(
             Set<TopicPartition> allPartitions,
             Map<TopicPartition, Double> rawWeights) {
+        return sanitizedCounted(allPartitions, rawWeights).weights();
+    }
+
+    /**
+     * Like {@link #sanitized(Set, Map)}, but also reports how many partitions fell back to
+     * the default weight — a data-quality signal for callers that expose it.
+     */
+    public static Sanitized sanitizedCounted(
+            Set<TopicPartition> allPartitions,
+            Map<TopicPartition, Double> rawWeights) {
         Map<TopicPartition, Double> weights = new HashMap<>();
         int defaulted = 0;
         for (TopicPartition tp : allPartitions) {
@@ -38,6 +48,10 @@ public final class PartitionWeights {
             log.warn("{} of {} partitions had no usable weight; using default weight {}",
                     defaulted, allPartitions.size(), PartitionWeightDefaults.MISSING);
         }
-        return weights;
+        return new Sanitized(weights, defaulted);
+    }
+
+    /** The sanitized weights plus how many entries fell back to the default. */
+    public record Sanitized(Map<TopicPartition, Double> weights, int defaultedCount) {
     }
 }

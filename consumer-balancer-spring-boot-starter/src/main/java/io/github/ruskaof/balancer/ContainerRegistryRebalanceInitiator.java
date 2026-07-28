@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 
 /**
@@ -32,6 +33,11 @@ public class ContainerRegistryRebalanceInitiator implements CoordinatorManager.R
     private final String groupId;
     private final Predicate<MessageListenerContainer> containerFilter;
     private final String filterDescription;
+
+    // The coordinator's scheduler thread writes, metrics scrape threads read.
+    private final AtomicLong initiations = new AtomicLong();
+    private final AtomicLong noMatchInitiations = new AtomicLong();
+    private final AtomicLong containersEnforced = new AtomicLong();
 
     /** Every registered container of {@code groupId}, on every cluster. */
     public ContainerRegistryRebalanceInitiator(KafkaListenerEndpointRegistry registry, String groupId) {
@@ -92,6 +98,7 @@ public class ContainerRegistryRebalanceInitiator implements CoordinatorManager.R
 
     @Override
     public void initiateRebalance() {
+        initiations.incrementAndGet();
         int rebalanced = 0;
         for (MessageListenerContainer container : registry.getListenerContainers()) {
             if (groupId.equals(container.getGroupId()) && containerFilter.test(container)) {
@@ -99,7 +106,9 @@ public class ContainerRegistryRebalanceInitiator implements CoordinatorManager.R
                 rebalanced++;
             }
         }
+        containersEnforced.addAndGet(rebalanced);
         if (rebalanced == 0) {
+            noMatchInitiations.incrementAndGet();
             // Silently doing nothing would leave the trigger firing forever against an
             // assignment it can never change.
             log.warn("No registered listener container matched group '{}' and {}; the proactive rebalance had"
@@ -110,5 +119,20 @@ public class ContainerRegistryRebalanceInitiator implements CoordinatorManager.R
             log.info("Enforced a rebalance on {} listener container(s) of group '{}' ({})",
                     rebalanced, groupId, filterDescription);
         }
+    }
+
+    /** Times {@link #initiateRebalance()} was called; monotonic. */
+    public long getInitiations() {
+        return initiations.get();
+    }
+
+    /** Initiations on which no registered container matched; monotonic. */
+    public long getNoMatchInitiations() {
+        return noMatchInitiations.get();
+    }
+
+    /** Containers that received {@code enforceRebalance()} across all initiations; monotonic. */
+    public long getContainersEnforced() {
+        return containersEnforced.get();
     }
 }

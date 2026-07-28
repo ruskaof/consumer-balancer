@@ -150,6 +150,32 @@ class KafkaOffsetRateWeightServiceTest {
     }
 
     @Test
+    void countsFailedBackgroundSamples() {
+        stubEndOffsets(Map.of(T0, 100L));
+        service.computeWeights(Set.of(T0));
+        assertEquals(0, service.getSampleErrors());
+
+        KafkaFutureImpl<Map<TopicPartition, ListOffsetsResultInfo>> failed = new KafkaFutureImpl<>();
+        failed.completeExceptionally(new RuntimeException("boom"));
+        ListOffsetsResult failedResult = mock(ListOffsetsResult.class);
+        when(failedResult.all()).thenReturn(failed);
+        when(admin.listOffsets(anyMap())).thenReturn(failedResult);
+        assertDoesNotThrow(service::sampleQuietly);
+
+        assertEquals(1, service.getSampleErrors());
+    }
+
+    @Test
+    void reportsTheTrackedPartitionCount() {
+        assertEquals(0, service.getTrackedPartitionCount());
+
+        stubEndOffsets(Map.of(T0, 100L, T1, 200L));
+        service.computeWeights(Set.of(T0, T1));
+
+        assertEquals(2, service.getTrackedPartitionCount());
+    }
+
+    @Test
     void rejectsSubSecondIntervals() {
         assertThrows(IllegalArgumentException.class,
                 () -> new KafkaOffsetRateWeightService(admin, Duration.ofMillis(500)));

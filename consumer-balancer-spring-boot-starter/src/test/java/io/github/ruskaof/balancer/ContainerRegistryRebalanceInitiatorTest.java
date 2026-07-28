@@ -6,6 +6,7 @@ import org.springframework.kafka.listener.MessageListenerContainer;
 
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
@@ -75,6 +76,32 @@ class ContainerRegistryRebalanceInitiatorTest {
         new ContainerRegistryRebalanceInitiator(registry, "coordinated-group").initiateRebalance();
 
         verify(otherGroupContainer, never()).enforceRebalance();
+    }
+
+    @Test
+    void countsInitiationsAndEnforcedContainers() {
+        register(container("coordinated-group", "orders"));
+        ContainerRegistryRebalanceInitiator initiator =
+                new ContainerRegistryRebalanceInitiator(registry, "coordinated-group");
+
+        initiator.initiateRebalance();
+
+        assertThat(initiator.getInitiations()).isEqualTo(1);
+        assertThat(initiator.getContainersEnforced()).isEqualTo(1);
+        assertThat(initiator.getNoMatchInitiations()).isZero();
+    }
+
+    @Test
+    void countsInitiationsThatMatchedNoContainer() {
+        register(container("other-group", "payments"));
+        ContainerRegistryRebalanceInitiator initiator =
+                new ContainerRegistryRebalanceInitiator(registry, "coordinated-group");
+
+        initiator.initiateRebalance();
+
+        assertThat(initiator.getInitiations()).isEqualTo(1);
+        assertThat(initiator.getContainersEnforced()).isZero();
+        assertThat(initiator.getNoMatchInitiations()).isEqualTo(1);
     }
 
     @Test

@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 /**
@@ -59,6 +60,7 @@ public class KafkaOffsetRateWeightService implements WeightService, AutoCloseabl
     private final Object lock = new Object();
     private final Deque<OffsetsSnapshot> history = new ArrayDeque<>(); // guarded by lock
     private Set<TopicPartition> trackedPartitions = Set.of();          // guarded by lock
+    private final AtomicLong sampleErrors = new AtomicLong();          // sampler thread writes, any thread reads
 
     /**
      * Uses a sample interval derived from the rate interval: a quarter of it, clamped
@@ -130,6 +132,18 @@ public class KafkaOffsetRateWeightService implements WeightService, AutoCloseabl
         return sampleInterval;
     }
 
+    /** Background end-offset samples that have failed since this service was created. */
+    public long getSampleErrors() {
+        return sampleErrors.get();
+    }
+
+    /** Partitions the background sampler currently snapshots; safe to call from any thread. */
+    public int getTrackedPartitionCount() {
+        synchronized (lock) {
+            return trackedPartitions.size();
+        }
+    }
+
     @Override
     public Map<TopicPartition, Double> computeWeights(Set<TopicPartition> allPartitions) {
         if (allPartitions.isEmpty()) {
@@ -180,6 +194,7 @@ public class KafkaOffsetRateWeightService implements WeightService, AutoCloseabl
                 prune(now);
             }
         } catch (Exception e) {
+            sampleErrors.incrementAndGet();
             log.warn("Background end-offset sample failed; weights will use an older baseline", e);
         }
     }

@@ -9,7 +9,7 @@ Built-in Kafka assignors such as `RangeAssignor` and `RoundRobinAssignor` balanc
 | Module | Purpose |
 |--------|---------|
 | `consumer-balancer-core` | `LoadAwarePartitionAssignor`, weight stores (Kafka offset-rate, Prometheus), balancing, triggers |
-| `consumer-balancer-spring-boot-starter` | Spring Boot auto-configuration |
+| `consumer-balancer-spring-boot-starter` | Spring Boot auto-configuration, Micrometer metrics |
 | `test-listener` | Example Spring Boot app |
 
 ## Requirements
@@ -174,6 +174,18 @@ Listener ids are the only stable, publicly readable identity a `MessageListenerC
 
 Give each cluster its own `MemberIdTracker` too (one per `ConsumerFactory`): the tracker keys member ids by group id, so sharing one instance between clusters that reuse a group id would pool member ids from both.
 
+The auto-configured [metrics](#metrics) binder also covers only the auto-configured stack. Give each hand-wired stack its own binder, with a tag that tells the clusters apart:
+
+```java
+@Bean
+ConsumerBalancerMetrics clusterBBalancerMetrics(MeterRegistry registry, ThresholdTrigger clusterBTrigger) {
+    var metrics = new ConsumerBalancerMetrics(
+            Tags.of("group", "my-group", "cluster", "b"), clusterBTrigger, null, null, null);
+    metrics.bindTo(registry);
+    return metrics;
+}
+```
+
 ## Bean wiring
 
 The starter injects the application context's `WeightService`, `BalanceService` and (when proactive rebalance is enabled) `MemberIdTracker` beans into Spring Boot's auto-configured consumer factory under the `assignor.load-aware.*` keys, so the assignor uses exactly the same collaborators as the rebalance trigger. Values set explicitly under `spring.kafka.consumer.properties.assignor.load-aware.*` win over the injected beans.
@@ -181,6 +193,34 @@ The starter injects the application context's `WeightService`, `BalanceService` 
 If you define your own `ConsumerFactory` bean, Boot's factory customizers do not run for it — set the `assignor.load-aware.*` keys on your factory yourself (the `BalancerConsumerFactoryCustomizer` bean can be applied manually).
 
 Every bean of the proactive path — `MemberIdTracker`, `RebalanceTrigger`, `CoordinatorManager.RebalanceInitiator`, `CoordinatorManager`, `CoordinatorManagerLifecycle` — is `@ConditionalOnMissingBean`, so defining your own replaces the auto-configured one rather than colliding with it. That is what makes a [second cluster's stack](#multiple-kafka-clusters) wirable by hand.
+
+## Metrics
+
+With Micrometer on the classpath and a `MeterRegistry` bean in the context — which is what `spring-boot-starter-actuator` plus a registry backend gives you — the starter binds the balancer's meters automatically. There is nothing to configure and no new dependency: Micrometer is optional for this library (absent from its POM), and without it the metrics auto-configuration backs off entirely. `consumer-balancer.enabled=false` turns the meters off together with everything else; individual meters can be suppressed with ordinary Micrometer meter filters.
+
+Every meter is prefixed `consumer.balancer.` and tagged with `group` = `spring.kafka.consumer.group-id` (Prometheus renders e.g. `consumer_balancer_trigger_evaluations_total{group="my-group",outcome="fired"}`).
+
+| Meter | Type | Tags | Meaning |
+|-------|------|------|---------|
+| `trigger.imbalance.ratio` | gauge | | `(max instance load) / (optimal max instance load)` from the last evaluation that computed it — the value the threshold trigger judges. `NaN` until first computed. |
+| `trigger.imbalance.threshold` | gauge | | The configured `rebalance-load-imbalance-threshold`, so dashboards can plot the ratio against its limit. |
+| `trigger.instance.load` | gauge | `assignment` = `current` \| `optimal` | Load of the most loaded instance under the current assignment, and what it would carry under the optimal one. |
+| `trigger.members` | gauge | | Group members at the last judged evaluation. |
+| `trigger.instances` | gauge | | Application instances observed at the last judged evaluation. |
+| `trigger.partitions` | gauge | | Assigned partitions at the last judged evaluation. |
+| `trigger.weights.defaulted` | gauge | | Partitions whose weight fell back to the default at the last judged evaluation — a weight-store data-quality signal. |
+| `trigger.violated.checks` | gauge | | Current [hysteresis](#proactive-rebalance) streak. |
+| `trigger.cooldown` | gauge (seconds) | | Effective cooldown between fires, including backoff doubling. |
+| `trigger.last.fired` | gauge (epoch seconds) | | When the trigger last fired on this instance; `NaN` until the first fire. `time() - x` is the age in PromQL. |
+| `trigger.evaluations` | counter | `outcome` = `fired` \| `balanced` \| `awaiting_hysteresis` \| `cooldown_suppressed` \| `group_not_stable` \| `no_members` \| `error` | Trigger evaluations by outcome. `error` counts the failures the trigger otherwise only logs (broken admin client, weight store) — worth alerting on. |
+| `trigger.evaluation.duration` | timer | | Wall time of evaluations (group describe, weight fetch, optimal-assignment computation). |
+| `coordinator` | gauge | | `1` on the instance currently holding the coordinator role, `0` everywhere else. Exactly one instance per group should report `1`. |
+| `rebalance.initiations` | counter | `result` = `enforced` \| `no_match` | Proactive rebalance initiations. `no_match` means no registered listener container matched the group and filter — the rebalance had no effect, check `listener-ids`; worth alerting on. |
+| `rebalance.containers.enforced` | counter | | Listener containers that received `enforceRebalance()`, across all initiations. |
+| `offset.rate.sample.errors` | counter | | Failed background end-offset samples. While these persist, weights degrade toward the default and balancing quality silently drops. |
+| `offset.rate.tracked.partitions` | gauge | | Partitions the offset-rate sampler currently tracks. |
+
+The trigger only evaluates on the elected coordinator, so on every other instance the `trigger.*` meters keep their initial values (`NaN`/`0`) — and after losing the role an instance keeps its last observations. Aggregate across instances with `max by (group)`, or join on `consumer_balancer_coordinator == 1`. The trigger meters describe the auto-configured `ThresholdTrigger`; replacing it with a custom `RebalanceTrigger` bean drops them (the rest keep working), and a [hand-wired second cluster](#multiple-kafka-clusters) registers its own `ConsumerBalancerMetrics`.
 
 ## Configuration reference (`consumer-balancer`)
 
