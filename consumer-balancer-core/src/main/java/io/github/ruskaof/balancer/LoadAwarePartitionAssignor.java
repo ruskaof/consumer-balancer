@@ -69,7 +69,10 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             return assignWithLoadAwareness(partitionsPerTopic, subscriptions);
         } catch (Exception e) {
             log.warn("Load-aware assignment failed. Falling back to round-robin assignment.", e);
-            return fallbackAssignor.assign(partitionsPerTopic, subscriptions);
+            Map<String, List<TopicPartition>> fallback =
+                    fallbackAssignor.assign(partitionsPerTopic, subscriptions);
+            logFallbackDistribution(subscriptions, fallback);
+            return fallback;
         }
     }
 
@@ -87,10 +90,53 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             Map<String, Subscription> subscriptions) {
 
         Set<TopicPartition> allPartitions = getAllPartitions(partitionsPerTopic);
-        Map<TopicPartition, Double> weights = PartitionWeights.sanitized(
+        PartitionWeights.Sanitized sanitized = PartitionWeights.sanitizedCounted(
                 allPartitions, weightService.computeWeights(allPartitions));
+        List<GroupMember> members = groupMembersFrom(subscriptions);
 
-        return balanceService.computeOptimalAssignment(groupMembersFrom(subscriptions), weights);
+        Map<String, List<TopicPartition>> assignment =
+                balanceService.computeOptimalAssignment(members, sanitized.weights());
+
+        logAssignmentExplanation(members, sanitized, assignment);
+        return assignment;
+    }
+
+    /**
+     * Logs the distribution the balancer produced and the detected causes of unevenness.
+     * Guarded so a summary bug can never reach the outer catch-all and silently downgrade
+     * the group to round-robin: the assignment is computed before this runs and is returned
+     * regardless.
+     */
+    private static void logAssignmentExplanation(
+            List<GroupMember> members,
+            PartitionWeights.Sanitized sanitized,
+            Map<String, List<TopicPartition>> assignment) {
+        if (!log.isInfoEnabled()) {
+            return;
+        }
+        try {
+            AssignmentExplanation explanation = AssignmentExplanation.explain(
+                    members, sanitized.weights(), sanitized.defaultedCount(), assignment);
+            log.info("{}", explanation.infoSummary());
+            if (log.isDebugEnabled()) {
+                log.debug("{}", explanation.debugTable());
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not summarize the computed assignment (the assignment itself is unaffected)", e);
+        }
+    }
+
+    private static void logFallbackDistribution(
+            Map<String, Subscription> subscriptions,
+            Map<String, List<TopicPartition>> fallback) {
+        if (!log.isInfoEnabled()) {
+            return;
+        }
+        try {
+            log.info("{}", AssignmentExplanation.fallbackSummary(groupMembersFrom(subscriptions), fallback));
+        } catch (RuntimeException e) {
+            log.warn("Could not summarize the round-robin fallback assignment", e);
+        }
     }
 
     /**
