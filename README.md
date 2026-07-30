@@ -315,15 +315,61 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 
 ## Operations
 
-- With the default offset-rate store, the first assignment after an instance becomes group leader uses default weights (no offset history yet) and is effectively count-balanced; subsequent assignments and proactive-trigger checks use measured rates. Partitions whose end offset went backwards (e.g. a recreated topic) fall back to the default weight `1.0` until fresh history accrues.
+- With the default offset-rate store, the first assignment after an instance becomes group leader uses default weights (no offset history yet) and is effectively count-balanced; subsequent assignments and proactive-trigger checks use measured rates. Partitions whose end offset went backwards (e.g. a recreated topic) fall back to the default weight `1.0` until fresh history accrues. The assignment log (see [Reading the assignment log](#reading-the-assignment-log)) names this situation as the `all N partitions had no usable weight` factor.
 - With the Prometheus store, your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. If your metrics use different label names (e.g. `kafka_topic`), set `consumer-balancer.prometheus.topic-label` / `partition-label` accordingly — remember the `by (...)` clause of the query must keep those labels. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
 - Partitions are assigned only to members subscribed to their topic, so groups whose members subscribe to different topic sets are handled correctly.
 - With more members than partitions, partitions spread evenly across **instances** (some members inside each instance stay idle); with fewer instances than partitions than members, every instance carries a near-equal share of the measured traffic. Instances receive equal traffic regardless of their member counts — an instance running fewer threads gets the same load on fewer, busier members.
 - The threshold trigger approximates instances by the broker-observed client host of each member. Whenever each JVM has its own address (one pod = one IP in Kubernetes), that induces exactly the assignor's per-JVM grouping. When instances share an address (several JVMs per machine, host-network pods), or when instances run *different* sets of listeners, the trigger's view and the assignor's diverge; the cooldown backoff then fades the useless rebalances out and logs a warning naming the cause. See [Proactive rebalance](#proactive-rebalance).
 - The trigger only judges a **stable** group, so a check landing during a rebalance is skipped rather than acted on. Expect `ThresholdTrigger skipped ... group state is PREPARING_REBALANCE` at debug level around every rebalance.
 - Proactive rebalance requires a group id in `spring.kafka.consumer.group-id`; only the listener containers of that group — narrowed by `consumer-balancer.listener-ids` when set — receive `enforceRebalance()`. When no container matches, a warning is logged instead of silently doing nothing.
-- If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`.
+- If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`: the cause is logged as a warning, followed by a `Round-robin fallback distribution ...` INFO line showing how many partitions each instance received. On this path partition weights are ignored entirely — an instance running twice the members receives roughly twice the partitions.
 - `LoadAwarePartitionAssignor` is a **client-side** assignor, so it applies only under the *classic* consumer group protocol (`group.protocol=classic`, the default on Kafka 4.x). If you opt into the new KIP-848 protocol (`group.protocol=consumer`), partitions are assigned broker-side and this assignor is bypassed — along with the member-id tracking that proactive rebalance relies on.
+
+### Reading the assignment log
+
+After every rebalance the **group leader** — the one consumer that runs the assignor, not necessarily the proactive-rebalance coordinator — logs the distribution it just computed, through the `io.github.ruskaof.balancer.LoadAwarePartitionAssignor` logger at INFO:
+
+```
+Load-aware assignment computed [instances=3, members=6, partitions=12, totalWeight=1050, defaultedWeights=3]:
+  instance pod-a: load=500.0 (47.6% of total), partitions=1, members=2
+  instance pod-b: load=300.0 (28.6% of total), partitions=6, members=2
+  instance pod-c: load=250.0 (23.8% of total), partitions=5, members=2
+  skew: max instance load 500.0 (pod-a) is +42.9% above the ideal even share 350.0
+  unevenness factors:
+  - partition orders-0 alone weighs 500.0, more than the ideal even share 350.0 — a perfectly even distribution is impossible
+  - 3 of 12 partitions had no usable weight and got the default 1.0; their real load is invisible to this assignment
+```
+
+Each `instance` line is the traffic that instance is *expected* to carry under the measured weights, with its share of the total. `skew` compares the most loaded instance against the ideal even share (`totalWeight / instances`) — note this is **not** the `consumer.balancer.trigger.imbalance.ratio` metric, which compares the *current* assignment against the *optimal* one; the skew line describes the freshly computed assignment itself. The `unevenness factors` name what the balancer detected about why the distribution cannot, or deliberately does not, come out flatter:
+
+- `all N partitions had no usable weight ...` — the weight store has no data yet (normal right after startup). Wait one `offset-rate.rate-interval` (or fix the Prometheus query); the proactive trigger then corrects the balance.
+- `N of M partitions had no usable weight ...` — some partitions are invisible to the weight store. Check that your PromQL covers every subscribed topic, or that the offset-rate store has sampled long enough.
+- `... defaulted partitions were placed as if nearly free` — measured weights dwarf the default `1.0`, so a busy-but-unmeasured partition may land anywhere, including on an already-loaded instance.
+- `every partition weight is zero ...` — the store reports no traffic at all; partitions were spread by count.
+- `partition X alone weighs ...` — one partition exceeds the ideal per-instance share, so **no** assignment can be even. Only more partitions (or a different partition key) can fix this; the balancer already minimized the damage.
+- `partitions of K topic(s) could only go to a subset of instances ...` — subscription topology constrains placement. If those topics carry real load, run their listeners on more instances.
+- `more instances (I) than partitions (P) ...` — some instances necessarily receive nothing.
+- `instances run different member counts ...` — instances receive equal load regardless of member count (by design), so members of smaller instances run hotter.
+
+For the full member-by-member table with every partition's weight, raise the same logger to DEBUG:
+
+```yaml
+logging:
+  level:
+    io.github.ruskaof.balancer.LoadAwarePartitionAssignor: DEBUG
+```
+
+```
+Load-aware assignment detail [instances=3, members=6, partitions=12]:
+  pod-a/consumer-a1-7f3e: load=500.0, partitions=[orders-0=500.0]
+  pod-a/consumer-a2-9c1b: load=0.0, partitions=[]
+  pod-b/consumer-b1-11aa: load=150.0, partitions=[orders-1=50.0, orders-4=50.0, payments-0=50.0]
+```
+
+**Still uneven on your dashboards even though the log looks balanced?** The log shows *expected* load at assignment time, under the configured weight metric — the gap is usually in the metric, not the balancing:
+
+- The weight may not be proportional to real cost: the default offset-rate store measures **produced events/sec**, and events of different topics can cost very different CPU. A Prometheus query measuring what you actually care about (e.g. per-partition processing time) balances better.
+- Weights are a trailing average measured *before* the rebalance; traffic that shifts afterwards is not reflected until the next trigger check fires a rebalance. Compare with `consumer.balancer.trigger.imbalance.ratio` for the live view.
 
 ## Build
 

@@ -12,6 +12,7 @@ import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.Assignment;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.Subscription;
+import org.apache.kafka.clients.consumer.RoundRobinAssignor;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
@@ -239,6 +240,49 @@ class LoadAwarePartitionAssignorTest {
                         new TopicPartition("t", 2), 3.0),
                 capturedWeights.get(),
                 "non-finite weights must fall back to the default");
+    }
+
+    @Test
+    void fallsBackToRoundRobinWhenWeightServiceThrows() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> {
+                    throw new IllegalStateException("weight backend unreachable");
+                }));
+
+        Map<String, Integer> partitionsPerTopic = Map.of("t", 3);
+        Map<String, Subscription> subscriptions = subscriptions(Map.of(
+                "a", List.of("t"),
+                "b", List.of("t")));
+
+        Map<String, List<TopicPartition>> assignment = assignor.assign(partitionsPerTopic, subscriptions);
+
+        assertEquals(
+                new RoundRobinAssignor().assign(partitionsPerTopic, subscriptions),
+                assignment,
+                "a failing weight service must degrade to plain round-robin, not fail the rebalance");
+    }
+
+    @Test
+    void fallsBackToRoundRobinWhenBalanceServiceThrows() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.BALANCE_SERVICE, (BalanceService) (members, weights) -> {
+                    throw new IllegalStateException("balance service broke");
+                }));
+
+        Map<String, Integer> partitionsPerTopic = Map.of("t", 4);
+        Map<String, Subscription> subscriptions = subscriptions(Map.of(
+                "a", List.of("t"),
+                "b", List.of("t")));
+
+        Map<String, List<TopicPartition>> assignment = assignor.assign(partitionsPerTopic, subscriptions);
+
+        assertEquals(
+                new RoundRobinAssignor().assign(partitionsPerTopic, subscriptions),
+                assignment,
+                "a failing balance service must degrade to plain round-robin, not fail the rebalance");
     }
 
     @Test
