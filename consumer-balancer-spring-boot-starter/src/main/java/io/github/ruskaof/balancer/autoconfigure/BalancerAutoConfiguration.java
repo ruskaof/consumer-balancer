@@ -86,12 +86,14 @@ public class BalancerAutoConfiguration {
         public RebalanceTrigger rebalanceTrigger(
                 AdminClient kafkaBalancerAdminClient,
                 KafkaProperties kafkaProperties,
+                MemberIdTracker memberIdTracker,
                 WeightService weightService,
                 BalanceService balanceService,
                 KafkaBalancerProperties kafkaBalancerProperties) {
             return new ThresholdTrigger(
                     kafkaBalancerAdminClient,
                     requireConsumerGroupId(kafkaProperties),
+                    memberIdTracker,
                     weightService,
                     kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
                     balanceService,

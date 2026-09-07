@@ -1,5 +1,6 @@
 package io.github.ruskaof.balancer.trigger.threshold;
 
+import io.github.ruskaof.balancer.MemberIdTracker;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.trigger.RebalanceDamping;
@@ -10,7 +11,6 @@ import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
-import org.apache.kafka.clients.admin.MemberDescription;
 import org.apache.kafka.common.GroupState;
 import org.apache.kafka.common.TopicPartition;
 
@@ -27,11 +27,14 @@ import java.util.concurrent.TimeUnit;
  * <p>The trigger observes the group from the outside, through the admin API, and that view is
  * necessarily an approximation of what the assignor sees:
  * <ul>
- *   <li>the admin API does not expose the instance ids members report to the assignor, so
- *       members are grouped by {@link MemberDescription#host()} — members of one pod share the
- *       broker-observed client address, and Kubernetes pod IPs are unique. Members with a
- *       blank host count as their own instances;</li>
- *   <li>the admin API does not expose member subscriptions either, so every member is treated
+ *   <li>the admin API exposes no instance ids, so members are grouped by the
+ *       {@code memberId -> instanceId} mapping the group leader hands back with every
+ *       assignment and {@link MemberIdTracker} keeps. A check whose mapping does not cover
+ *       every member the admin API reports — during a rolling upgrade from a version that
+ *       does not send one, say — is skipped rather than guessed at: treating an unmapped
+ *       member as its own instance would compare the group against an optimum the assignor
+ *       would never produce, and ask for a rebalance on every single check;</li>
+ *   <li>the admin API does not expose member subscriptions, so every member is treated
  *       as eligible for every topic in the group. That matches the instance-level load this
  *       trigger compares as long as every instance runs the whole set of listeners;</li>
  *   <li>weights are measured locally, while the assignment was computed from the group
@@ -59,12 +62,12 @@ public class ThresholdTrigger implements RebalanceTrigger {
 
     private static final long DESCRIBE_TIMEOUT_MS = 30_000L;
 
-    private static final String LIKELY_CAUSES = "Likely causes: an instance id per member that does not match client"
-            + " hosts, several instances sharing one host, instances running different sets of listeners, or an"
+    private static final String LIKELY_CAUSES = "Likely causes: instances running different sets of listeners, or an"
             + " imbalance the assignor cannot improve on with its own weight measurements.";
 
     private final AdminClient adminClient;
     private final String groupId;
+    private final MemberIdTracker memberIdTracker;
     private final WeightService weightService;
     private final double threshold;
     private final BalanceService balanceService;
@@ -79,6 +82,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
     private boolean balancedSinceLastFire = true;
     private Instant lastFiredAt;
     private boolean warnedAboutMissingGroupState;
+    private boolean warnedAboutUnknownInstances;
     private double lastRatio = Double.NaN;
     private double lastCurrentMaxLoad = Double.NaN;
     private double lastOptimalMaxLoad = Double.NaN;
@@ -97,6 +101,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
     public ThresholdTrigger(
             AdminClient adminClient,
             String groupId,
+            MemberIdTracker memberIdTracker,
             WeightService weightService,
             double threshold,
             BalanceService balanceService,
@@ -104,6 +109,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
             Clock clock) {
         this.adminClient = Objects.requireNonNull(adminClient, "adminClient");
         this.groupId = Objects.requireNonNull(groupId, "groupId");
+        this.memberIdTracker = Objects.requireNonNull(memberIdTracker, "memberIdTracker");
         this.weightService = Objects.requireNonNull(weightService, "weightService");
         this.threshold = threshold;
         this.balanceService = Objects.requireNonNull(balanceService, "balanceService");
@@ -146,15 +152,18 @@ public class ThresholdTrigger implements RebalanceTrigger {
             return EvaluationOutcome.NO_MEMBERS;
         }
 
+        var instanceIdByMember = instanceIdsOf(groupDescription);
+        if (instanceIdByMember == null) {
+            return EvaluationOutcome.INSTANCES_UNKNOWN;
+        }
+
         var allPartitions = new HashSet<TopicPartition>();
         var currentAssignment = new HashMap<String, List<TopicPartition>>();
-        var instanceKeyByMember = new HashMap<String, String>();
 
         for (var memberDescription : groupDescription.members()) {
             allPartitions.addAll(memberDescription.assignment().topicPartitions());
             currentAssignment.put(memberDescription.consumerId(),
                     memberDescription.assignment().topicPartitions().stream().toList());
-            instanceKeyByMember.put(memberDescription.consumerId(), instanceKeyOf(memberDescription));
         }
 
         var sanitized = PartitionWeights.sanitizedCounted(
@@ -162,7 +171,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
         var weights = sanitized.weights();
 
         lastMemberCount = groupDescription.members().size();
-        lastInstanceCount = Set.copyOf(instanceKeyByMember.values()).size();
+        lastInstanceCount = Set.copyOf(instanceIdByMember.values()).size();
         lastPartitionCount = allPartitions.size();
         lastDefaultedWeightCount = sanitized.defaultedCount();
 
@@ -173,15 +182,15 @@ public class ThresholdTrigger implements RebalanceTrigger {
             allTopics.add(tp.topic());
         }
         var members = new ArrayList<GroupMember>();
-        instanceKeyByMember.forEach((memberId, instanceKey) ->
-                members.add(new GroupMember(memberId, instanceKey, allTopics)));
+        instanceIdByMember.forEach((memberId, instanceId) ->
+                members.add(new GroupMember(memberId, instanceId, allTopics)));
 
         var optimalAssignment = balanceService.computeOptimalAssignment(members, weights);
 
         var currentMaxLoaded = maxInstanceLoad(
-                groupByInstance(currentAssignment, instanceKeyByMember), weights);
+                groupByInstance(currentAssignment, instanceIdByMember), weights);
         var optimalMaxLoaded = maxInstanceLoad(
-                groupByInstance(optimalAssignment, instanceKeyByMember), weights);
+                groupByInstance(optimalAssignment, instanceIdByMember), weights);
 
         if (optimalMaxLoaded == null || currentMaxLoaded == null) {
             log.debug("ThresholdTrigger evaluated [group={}]: no members with assignments, shouldTrigger=false",
@@ -362,19 +371,61 @@ public class ThresholdTrigger implements RebalanceTrigger {
         return scaled.compareTo(damping.maxCooldown()) > 0 ? damping.maxCooldown() : scaled;
     }
 
-    /** Members of one pod share the broker-observed client host; blank hosts stay singletons. */
-    private static String instanceKeyOf(MemberDescription member) {
-        String host = member.host();
-        return (host == null || host.isBlank()) ? member.consumerId() : host;
+    /**
+     * The instance every member of the described group runs in, from the mapping the group
+     * leader last sent with an assignment, or {@code null} when the mapping does not cover
+     * all of them.
+     *
+     * <p>All-or-nothing on purpose. The alternative — counting an unmapped member as its own
+     * instance — silently changes what the comparison means: the optimum would then spread
+     * that member's share per member rather than per pod, which is not something the assignor
+     * would ever produce, so the ratio would sit above the threshold permanently and ask for
+     * a rebalance that cannot help on every check.
+     */
+    private Map<String, String> instanceIdsOf(ConsumerGroupDescription groupDescription) {
+        Map<String, String> known = memberIdTracker.getInstanceIds(groupId);
+        Map<String, String> instanceIdByMember = new HashMap<>();
+        List<String> unmapped = new ArrayList<>();
+
+        for (var memberDescription : groupDescription.members()) {
+            String instanceId = known.get(memberDescription.consumerId());
+            if (instanceId == null) {
+                unmapped.add(memberDescription.consumerId());
+            } else {
+                instanceIdByMember.put(memberDescription.consumerId(), instanceId);
+            }
+        }
+
+        if (!unmapped.isEmpty()) {
+            // Permanent until a leader running a version that sends the mapping assigns, so
+            // say it once — an operator seeing a silent trigger needs to know why.
+            if (!warnedAboutUnknownInstances) {
+                warnedAboutUnknownInstances = true;
+                log.warn("ThresholdTrigger [group={}]: no instance id is known for members {}, so the group cannot"
+                                + " be grouped into instances and is not checked for imbalance. Expected while"
+                                + " rolling out a version that reports instance ids with the assignment; if it"
+                                + " persists, the group leader is on an older version or the group is too large"
+                                + " for the mapping to be sent.",
+                        groupId, unmapped);
+            }
+            return null;
+        }
+
+        if (warnedAboutUnknownInstances) {
+            warnedAboutUnknownInstances = false;
+            log.info("ThresholdTrigger [group={}]: instance ids are known for every member again; resuming"
+                    + " imbalance checks", groupId);
+        }
+        return instanceIdByMember;
     }
 
     private static Map<String, List<TopicPartition>> groupByInstance(
             Map<String, List<TopicPartition>> assignmentByMember,
-            Map<String, String> instanceKeyByMember) {
+            Map<String, String> instanceIdByMember) {
         Map<String, List<TopicPartition>> byInstance = new HashMap<>();
         assignmentByMember.forEach((member, partitions) ->
                 byInstance.computeIfAbsent(
-                                instanceKeyByMember.getOrDefault(member, member),
+                                instanceIdByMember.getOrDefault(member, member),
                                 key -> new ArrayList<>())
                         .addAll(partitions));
         return byInstance;
@@ -408,7 +459,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
     }
 
     private record InstanceLoad(
-            String instanceKey,
+            String instanceId,
             double load) {
     }
 
@@ -424,6 +475,11 @@ public class ThresholdTrigger implements RebalanceTrigger {
         COOLDOWN_SUPPRESSED,
         /** The group was not {@code STABLE} (or reported no state), so it was not judged. */
         GROUP_NOT_STABLE,
+        /**
+         * No instance id was known for at least one member, so the group could not be
+         * grouped into instances and was not judged.
+         */
+        INSTANCES_UNKNOWN,
         /** The group had no members, or none with assigned partitions. */
         NO_MEMBERS,
         /** The evaluation threw; the exception was logged and swallowed. */

@@ -5,6 +5,8 @@ import io.github.ruskaof.balancer.autoconfigure.BalancerAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.KafkaOffsetRateWeightAutoConfiguration;
 import io.github.ruskaof.balancer.trigger.CoordinatorManager;
+import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
+import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,8 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
 /**
- * With proactive rebalance enabled, the customizer must inject the MemberIdTracker bean
- * so the assignor can report member ids to the coordinator election.
+ * With proactive rebalance enabled, the customizer must inject the MemberIdTracker bean so
+ * the assignor can report member ids to the coordinator election and the group's instance
+ * ids to the trigger — which only works while both ends hold the same tracker.
  */
 @SpringBootTest(classes = BalancerProactiveMemberTrackerIntegrationTest.TestApp.class)
 class BalancerProactiveMemberTrackerIntegrationTest {
@@ -44,6 +48,18 @@ class BalancerProactiveMemberTrackerIntegrationTest {
         assertThat(factory.getConfigurationProperties().get(LoadAwareAssignorConfig.MEMBER_ID_TRACKER))
                 .isSameAs(context.getBean(MemberIdTracker.class));
         assertThat(context.getBean(CoordinatorManager.class)).isNotNull();
+    }
+
+    @Test
+    void triggerReadsTheSameTrackerTheAssignorWritesTo() throws Exception {
+        // A second tracker anywhere in this wiring would leave the trigger with an empty
+        // mapping forever, and it would silently skip every check.
+        RebalanceTrigger trigger = context.getBean(RebalanceTrigger.class);
+        Field field = ThresholdTrigger.class.getDeclaredField("memberIdTracker");
+        field.setAccessible(true);
+
+        assertThat(trigger).isInstanceOf(ThresholdTrigger.class);
+        assertThat(field.get(trigger)).isSameAs(context.getBean(MemberIdTracker.class));
     }
 
     @Configuration(proxyBeanMethods = false)

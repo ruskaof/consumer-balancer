@@ -1,5 +1,6 @@
 package io.github.ruskaof.balancer.trigger.threshold;
 
+import io.github.ruskaof.balancer.MemberIdTracker;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
 import io.github.ruskaof.balancer.trigger.RebalanceDamping;
 import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger.EvaluationOutcome;
@@ -18,6 +19,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -39,10 +41,13 @@ class ThresholdTriggerStatusTest {
     private final AdminClient adminClient = mock(AdminClient.class);
     private final Clock clock = mock(Clock.class);
     private final Map<TopicPartition, Double> weights = new HashMap<>();
+    private final MemberIdTracker memberIdTracker = new MemberIdTracker();
+    private final Map<String, String> stubbedInstanceIds = new LinkedHashMap<>();
+    private int generation;
 
     private ThresholdTrigger trigger(RebalanceDamping damping) {
         at(Duration.ZERO);
-        return new ThresholdTrigger(adminClient, GROUP, partitions -> weights, 1.1,
+        return new ThresholdTrigger(adminClient, GROUP, memberIdTracker, partitions -> weights, 1.1,
                 new SortingRoundRobinBalanceService(), damping, clock);
     }
 
@@ -156,8 +161,8 @@ class ThresholdTriggerStatusTest {
         assertTrue(trigger.shouldTrigger());
 
         stubGroup(GroupState.PREPARING_REBALANCE,
-                member("m1", "h1", T0, T1),
-                member("m2", "h2"));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2"));
         assertFalse(trigger.shouldTrigger());
 
         ThresholdTrigger.Status status = trigger.status();
@@ -233,18 +238,18 @@ class ThresholdTriggerStatusTest {
         assertTrue(status.evaluationTimeNanos() >= 0);
     }
 
-    /** h1 carries both heavy partitions while h2 idles: ratio 2.0. */
+    /** i1 carries both heavy partitions while i2 idles: ratio 2.0. */
     private void stubImbalancedGroup() {
         stubGroup(
-                member("m1", "h1", T0, T1),
-                member("m2", "h2"));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2"));
     }
 
-    /** One heavy partition per host: ratio 1.0. */
+    /** One heavy partition per instance: ratio 1.0. */
     private void stubBalancedGroup() {
         stubGroup(
-                member("m1", "h1", T0),
-                member("m2", "h2", T1));
+                member("m1", "i1", T0),
+                member("m2", "i2", T1));
     }
 
     private void weighImbalanced() {
@@ -275,12 +280,16 @@ class ThresholdTriggerStatusTest {
         DescribeConsumerGroupsResult result = mock(DescribeConsumerGroupsResult.class);
         when(result.describedGroups()).thenReturn(futures);
         when(adminClient.describeConsumerGroups(List.of(GROUP))).thenReturn(result);
+        // What the leader would have sent back with the assignment this group is now on.
+        memberIdTracker.recordInstanceIds(GROUP, ++generation, stubbedInstanceIds);
+        stubbedInstanceIds.clear();
     }
 
-    private static MemberDescription member(String consumerId, String host, TopicPartition... partitions) {
+    /** A member of {@code instanceId}, which the next {@link #stubGroup} tells the tracker about. */
+    private MemberDescription member(String consumerId, String instanceId, TopicPartition... partitions) {
+        stubbedInstanceIds.put(consumerId, instanceId);
         MemberDescription member = mock(MemberDescription.class);
         when(member.consumerId()).thenReturn(consumerId);
-        when(member.host()).thenReturn(host);
         when(member.assignment()).thenReturn(new MemberAssignment(Set.of(partitions)));
         return member;
     }
