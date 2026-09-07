@@ -31,10 +31,12 @@ Describes the consumer group, pulls per-partition weights from the configured
 weight store (by default, end-offset rates measured through the Kafka
 AdminClient), computes the *optimal* assignment via the `BalanceService`, and
 compares the **current** most-loaded application instance against the
-**optimal** most-loaded instance. Members are grouped into instances by their
-broker-observed client host (the AdminClient cannot see the instance ids members
-report to the assignor); members with a blank host count as their own instances.
-The imbalance is:
+**optimal** most-loaded instance. Members are grouped into instances by the
+`memberId → instanceId` mapping the group leader hands back with every assignment
+and each JVM keeps in its `MemberIdTracker` — the AdminClient cannot see the
+instance ids members report to the assignor, so the mapping is what carries them
+to the coordinator. A check whose mapping does not cover every member the
+AdminClient reports is skipped rather than guessed at. The imbalance is:
 
 ```
 currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.1)

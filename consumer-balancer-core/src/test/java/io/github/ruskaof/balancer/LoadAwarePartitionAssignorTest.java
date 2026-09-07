@@ -4,6 +4,7 @@ import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorCo
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import io.github.ruskaof.balancer.instance.GroupInstanceUserData;
 import io.github.ruskaof.balancer.instance.InstanceIdResolver;
 import io.github.ruskaof.balancer.instance.InstanceUserData;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
@@ -11,8 +12,13 @@ import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.Assignment;
+import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.GroupAssignment;
+import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.GroupSubscription;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor.Subscription;
 import org.apache.kafka.clients.consumer.RoundRobinAssignor;
+import org.apache.kafka.common.Cluster;
+import org.apache.kafka.common.Node;
+import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
 
@@ -420,6 +426,113 @@ class LoadAwarePartitionAssignorTest {
     }
 
     @Test
+    void assignSendsTheGroupsInstanceIdsBackToEveryMember() {
+        LoadAwarePartitionAssignor assignor = configuredAssignor();
+
+        GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(instanceSubscriptions()));
+
+        Map<String, String> expected = Map.of("a1", "pod-a", "a2", "pod-a", "b1", "pod-b");
+        assertEquals(expected.keySet(), assignment.groupAssignment().keySet());
+        assignment.groupAssignment().forEach((memberId, memberAssignment) -> {
+            GroupInstanceUserData.Decoded decoded =
+                    GroupInstanceUserData.decode(memberAssignment.userData());
+            assertTrue(decoded.ok(), memberId + " received no readable mapping");
+            assertEquals(expected, decoded.instanceIdByMember(), memberId + " received the wrong mapping");
+        });
+    }
+
+    @Test
+    void everyMemberGetsItsOwnViewOfTheEncodedMapping() {
+        LoadAwarePartitionAssignor assignor = configuredAssignor();
+
+        GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(instanceSubscriptions()));
+
+        // The protocol serializer consumes the buffer it is handed, so draining one member's
+        // copy must leave the others untouched.
+        ByteBuffer drained = assignment.groupAssignment().get("a1").userData();
+        drained.get(new byte[drained.remaining()]);
+
+        assertEquals(0, drained.remaining(), "the drained buffer is the one that was read");
+        for (String memberId : List.of("a2", "b1")) {
+            ByteBuffer other = assignment.groupAssignment().get(memberId).userData();
+            assertEquals(0, other.position(), memberId + " shares its buffer position with another member");
+            assertTrue(GroupInstanceUserData.decode(other).ok(), memberId + " lost its mapping");
+        }
+    }
+
+    @Test
+    void assignSendsTheInstanceIdsEvenWhenItFallsBackToRoundRobin() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> {
+                    throw new IllegalStateException("weight backend unreachable");
+                }));
+
+        GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(instanceSubscriptions()));
+
+        // The mapping comes from the subscriptions, not from the assignment, so a degraded
+        // assignment must not also blind the proactive trigger.
+        assertEquals(
+                Map.of("a1", "pod-a", "a2", "pod-a", "b1", "pod-b"),
+                GroupInstanceUserData.decode(
+                        assignment.groupAssignment().get("a1").userData()).instanceIdByMember());
+    }
+
+    @Test
+    void assignSendsNoInstanceIdsWhenTheGroupIsTooLargeForTheBudget() {
+        LoadAwarePartitionAssignor assignor = configuredAssignor();
+        Map<String, Subscription> subscriptions = new TreeMap<>();
+        // Long member ids reach the budget at a member count the test can still build.
+        String padding = "x".repeat(1000);
+        for (int i = 0; i < 300; i++) {
+            subscriptions.put("member-" + i + "-" + padding,
+                    new Subscription(List.of("t"), InstanceUserData.encode("pod-" + i)));
+        }
+
+        GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(subscriptions));
+
+        assertEquals(300, assignment.groupAssignment().size(), "every member must still be assigned");
+        assignment.groupAssignment().values().forEach(a ->
+                assertNull(a.userData(), "a mapping over the budget must not be sent at all"));
+    }
+
+    @Test
+    void onAssignmentRecordsTheGroupsInstanceIdsInTheConfiguredTracker() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        MemberIdTracker tracker = new MemberIdTracker();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.MEMBER_ID_TRACKER, tracker));
+
+        Map<String, String> mapping = Map.of("a1", "pod-a", "b1", "pod-b");
+        assignor.onAssignment(
+                new Assignment(List.of(), GroupInstanceUserData.encode(mapping)),
+                new ConsumerGroupMetadata("g", 7, "a1", Optional.empty()));
+
+        assertEquals(mapping, tracker.getInstanceIds("g"));
+    }
+
+    @Test
+    void onAssignmentKeepsTheKnownInstanceIdsWhenTheLeaderSendsNone() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        MemberIdTracker tracker = new MemberIdTracker();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.MEMBER_ID_TRACKER, tracker));
+        Map<String, String> mapping = Map.of("a1", "pod-a");
+        assignor.onAssignment(
+                new Assignment(List.of(), GroupInstanceUserData.encode(mapping)),
+                new ConsumerGroupMetadata("g", 7, "a1", Optional.empty()));
+
+        // A leader on an older version sends nothing; the trigger checks coverage itself.
+        assignor.onAssignment(
+                new Assignment(List.of()),
+                new ConsumerGroupMetadata("g", 8, "a1", Optional.empty()));
+
+        assertEquals(mapping, tracker.getInstanceIds("g"));
+    }
+
+    @Test
     void onAssignmentWithoutTrackerIsNoOp() {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
         assignor.configure(Map.of(
@@ -442,6 +555,31 @@ class LoadAwarePartitionAssignorTest {
                 LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService,
                 LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
         return assignor;
+    }
+
+    private static LoadAwarePartitionAssignor configuredAssignor() {
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of()));
+        return assignor;
+    }
+
+    /** Two members in pod-a, one in pod-b — the case the trigger has to see as two instances. */
+    private static Map<String, Subscription> instanceSubscriptions() {
+        Map<String, Subscription> subscriptions = new TreeMap<>();
+        subscriptions.put("a1", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
+        subscriptions.put("a2", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
+        subscriptions.put("b1", new Subscription(List.of("t"), InstanceUserData.encode("pod-b")));
+        return subscriptions;
+    }
+
+    private static Cluster cluster(String topic, int partitionCount) {
+        Node node = new Node(0, "localhost", 9092);
+        List<PartitionInfo> partitions = new ArrayList<>();
+        for (int i = 0; i < partitionCount; i++) {
+            partitions.add(new PartitionInfo(topic, i, node, new Node[]{node}, new Node[]{node}));
+        }
+        return new Cluster("c", List.of(node), partitions, Set.of(), Set.of());
     }
 
     private static Map<String, Subscription> subscriptions(Map<String, List<String>> topicsByMember) {

@@ -1,5 +1,6 @@
 package io.github.ruskaof.balancer.trigger.threshold;
 
+import io.github.ruskaof.balancer.MemberIdTracker;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
 import io.github.ruskaof.balancer.trigger.RebalanceDamping;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -17,6 +18,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,9 +27,10 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 /**
- * The trigger compares instance-level loads (members grouped by broker-observed host) and is
- * deliberately reluctant to fire: only stable groups are judged, the imbalance must persist
- * over several checks, and fires are spaced by a cooldown that grows while they do not help.
+ * The trigger compares instance-level loads (members grouped by the instance ids the leader
+ * hands back with every assignment) and is deliberately reluctant to fire: only stable groups
+ * are judged, the imbalance must persist over several checks, and fires are spaced by a
+ * cooldown that grows while they do not help.
  */
 class ThresholdTriggerTest {
 
@@ -40,10 +43,13 @@ class ThresholdTriggerTest {
     private final AdminClient adminClient = mock(AdminClient.class);
     private final Clock clock = mock(Clock.class);
     private final Map<TopicPartition, Double> weights = new HashMap<>();
+    private final MemberIdTracker memberIdTracker = new MemberIdTracker();
+    private final Map<String, String> stubbedInstanceIds = new LinkedHashMap<>();
+    private int generation;
 
     private ThresholdTrigger trigger(RebalanceDamping damping) {
         at(Duration.ZERO);
-        return new ThresholdTrigger(adminClient, GROUP, partitions -> weights, 1.1,
+        return new ThresholdTrigger(adminClient, GROUP, memberIdTracker, partitions -> weights, 1.1,
                 new SortingRoundRobinBalanceService(), damping, clock);
     }
 
@@ -59,40 +65,88 @@ class ThresholdTriggerTest {
     @Test
     void firesOnInstanceImbalanceInvisibleAtMemberLevel() {
         // Every member carries the load it would carry under a member-level optimum, but
-        // both heavy partitions sit on host h1.
+        // both heavy partitions sit in instance i1.
         stubGroup(
-                member("m1", "h1", T0),
-                member("m2", "h1", T1),
-                member("m3", "h2", T2),
-                member("m4", "h2", T3));
+                member("m1", "i1", T0),
+                member("m2", "i1", T1),
+                member("m3", "i2", T2),
+                member("m4", "i2", T3));
         weigh(T0, 10.0, T1, 10.0, T2, 1.0, T3, 1.0);
 
         assertTrue(eagerTrigger().shouldTrigger(),
-                "h1 carries 20 while the optimal instance max is 11");
+                "i1 carries 20 while the optimal instance max is 11");
+    }
+
+    @Test
+    void groupsByInstanceIdRatherThanHost() {
+        // Two pods behind one address (hostNetwork, NAT) are two instances: nothing here
+        // even looks at MemberDescription.host(), which the mocks deliberately never stub.
+        stubGroup(
+                member("m1", "i1", T0),
+                member("m2", "i2", T1));
+        weigh(T0, 10.0, T1, 10.0);
+
+        assertFalse(eagerTrigger().shouldTrigger(),
+                "10 each: grouping the two into one instance would see 20 against an optimum of 10 and fire");
     }
 
     @Test
     void doesNotFireWhenInstancesAreBalancedDespiteIdleMembers() {
         // More members than partitions: two members idle, but each instance carries the same load.
         stubGroup(
-                member("m1", "h1", T0),
-                member("m2", "h1"),
-                member("m3", "h2", T1),
-                member("m4", "h2"));
+                member("m1", "i1", T0),
+                member("m2", "i1"),
+                member("m3", "i2", T1),
+                member("m4", "i2"));
         weigh(T0, 10.0, T1, 10.0);
 
         assertFalse(eagerTrigger().shouldTrigger());
     }
 
     @Test
-    void membersWithBlankHostCountAsTheirOwnInstances() {
+    void skipsTheCheckWhenAMemberHasNoKnownInstance() {
+        // Mid rolling upgrade: the leader is on a version that sends no mapping, so m2 is
+        // unmapped. Counting it as its own instance would compare the group against an
+        // optimum the assignor would never produce and fire on every check.
         stubGroup(
-                member("m1", "", T0, T1),
-                member("m2", ""));
-        weigh(T0, 10.0, T1, 10.0);
+                member("m1", "i1", T0, T1),
+                memberWithoutInstanceId("m2"));
+        weighImbalanced();
+        ThresholdTrigger trigger = eagerTrigger();
 
-        assertTrue(eagerTrigger().shouldTrigger(),
-                "with singleton instances, m1 carries 20 while the optimum is 10 per member");
+        assertFalse(trigger.shouldTrigger());
+        assertFalse(trigger.shouldTrigger(), "and keeps skipping rather than converging on a fire");
+        assertEquals(2, trigger.status().evaluations(ThresholdTrigger.EvaluationOutcome.INSTANCES_UNKNOWN));
+    }
+
+    @Test
+    void resumesCheckingOnceEveryMemberIsMapped() {
+        stubGroup(
+                member("m1", "i1", T0, T1),
+                memberWithoutInstanceId("m2"));
+        weighImbalanced();
+        ThresholdTrigger trigger = eagerTrigger();
+        assertFalse(trigger.shouldTrigger());
+
+        stubImbalancedGroup();
+        assertTrue(trigger.shouldTrigger(), "the mapping now covers both members");
+    }
+
+    @Test
+    void doesNotLetTheSkipDisturbTheViolationStreak() {
+        stubImbalancedGroup();
+        weighImbalanced();
+        ThresholdTrigger trigger = trigger(new RebalanceDamping(2, Duration.ZERO, Duration.ZERO));
+
+        assertFalse(trigger.shouldTrigger(), "1 of 2 checks");
+
+        stubGroup(
+                member("m1", "i1", T0, T1),
+                memberWithoutInstanceId("m2"));
+        assertFalse(trigger.shouldTrigger(), "not judged at all");
+
+        stubImbalancedGroup();
+        assertTrue(trigger.shouldTrigger(), "2 of 2 checks: an unjudged check does not reset the streak");
     }
 
     @Test
@@ -118,7 +172,7 @@ class ThresholdTriggerTest {
         weigh(T0, Double.NaN);
 
         assertTrue(eagerTrigger().shouldTrigger(),
-                "with both partitions defaulted to 1.0, h1 carries 2 while the optimum is 1");
+                "with both partitions defaulted to 1.0, i1 carries 2 while the optimum is 1");
     }
 
     @Test
@@ -126,8 +180,8 @@ class ThresholdTriggerTest {
         // Mid-rebalance the admin API reports stale, partial or empty assignments; firing on
         // those would re-fire on the rebalance this trigger just caused.
         stubGroup(GroupState.PREPARING_REBALANCE,
-                member("m1", "h1", T0, T1),
-                member("m2", "h2"));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2"));
         weighImbalanced();
 
         assertFalse(eagerTrigger().shouldTrigger());
@@ -136,8 +190,8 @@ class ThresholdTriggerTest {
     @Test
     void doesNotJudgeAGroupWhoseStateTheBrokerDidNotReport() {
         stubGroup((GroupState) null,
-                member("m1", "h1", T0, T1),
-                member("m2", "h2"));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2"));
         weighImbalanced();
 
         assertFalse(eagerTrigger().shouldTrigger());
@@ -164,8 +218,8 @@ class ThresholdTriggerTest {
 
         // Something moved: the streak describes a different assignment now.
         stubGroup(
-                member("m1", "h1", T0, T1),
-                member("m2", "h2", T2));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2", T2));
         assertFalse(trigger.shouldTrigger(), "1 of 2 checks on the new assignment");
         assertTrue(trigger.shouldTrigger(), "2 of 2 checks on the new assignment");
     }
@@ -216,8 +270,8 @@ class ThresholdTriggerTest {
         assertFalse(trigger.shouldTrigger(), "1 of 2 checks");
 
         stubGroup(GroupState.COMPLETING_REBALANCE,
-                member("m1", "h1", T0, T1),
-                member("m2", "h2"));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2"));
         assertFalse(trigger.shouldTrigger(), "not judged at all");
 
         stubImbalancedGroup();
@@ -300,18 +354,18 @@ class ThresholdTriggerTest {
         assertTrue(trigger.shouldTrigger(), "the cooldown stays at 2h instead of doubling to 4h");
     }
 
-    /** h1 carries both heavy partitions while h2 idles: ratio 2.0. */
+    /** i1 carries both heavy partitions while i2 idles: ratio 2.0. */
     private void stubImbalancedGroup() {
         stubGroup(
-                member("m1", "h1", T0, T1),
-                member("m2", "h2"));
+                member("m1", "i1", T0, T1),
+                member("m2", "i2"));
     }
 
-    /** One heavy partition per host: ratio 1.0. */
+    /** One heavy partition per instance: ratio 1.0. */
     private void stubBalancedGroup() {
         stubGroup(
-                member("m1", "h1", T0),
-                member("m2", "h2", T1));
+                member("m1", "i1", T0),
+                member("m2", "i2", T1));
     }
 
     private void weighImbalanced() {
@@ -349,12 +403,21 @@ class ThresholdTriggerTest {
         DescribeConsumerGroupsResult result = mock(DescribeConsumerGroupsResult.class);
         when(result.describedGroups()).thenReturn(futures);
         when(adminClient.describeConsumerGroups(List.of(GROUP))).thenReturn(result);
+        // What the leader would have sent back with the assignment this group is now on.
+        memberIdTracker.recordInstanceIds(GROUP, ++generation, stubbedInstanceIds);
+        stubbedInstanceIds.clear();
     }
 
-    private static MemberDescription member(String consumerId, String host, TopicPartition... partitions) {
+    /** A member of {@code instanceId}, which the next {@link #stubGroup} tells the tracker about. */
+    private MemberDescription member(String consumerId, String instanceId, TopicPartition... partitions) {
+        stubbedInstanceIds.put(consumerId, instanceId);
+        return memberWithoutInstanceId(consumerId, partitions);
+    }
+
+    /** A member the leader's mapping does not cover — an older version, say. */
+    private static MemberDescription memberWithoutInstanceId(String consumerId, TopicPartition... partitions) {
         MemberDescription member = mock(MemberDescription.class);
         when(member.consumerId()).thenReturn(consumerId);
-        when(member.host()).thenReturn(host);
         when(member.assignment()).thenReturn(new MemberAssignment(Set.of(partitions)));
         return member;
     }
