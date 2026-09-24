@@ -16,18 +16,11 @@ public class CoordinatorManager implements AutoCloseable {
     private final RebalanceInitiator rebalanceInitiator;
     private final long triggerCheckIntervalMs;
 
+    private final String groupId;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean monitoring = new AtomicBoolean(false);
     private final AtomicBoolean running = new AtomicBoolean(true);
     private volatile ScheduledFuture<?> triggerFuture;
-
-    @FunctionalInterface
-    public interface RebalanceInitiator {
-        /**
-         * Called when trigger condition is met. User implements rebalance logic here.
-         */
-        void initiateRebalance();
-    }
 
     public CoordinatorManager(
             CoordinatorElection election,
@@ -38,8 +31,9 @@ public class CoordinatorManager implements AutoCloseable {
         this.trigger = trigger;
         this.rebalanceInitiator = rebalanceInitiator;
         this.triggerCheckIntervalMs = triggerCheckIntervalMs;
+        this.groupId = election.getGroupId();
         this.scheduler = Executors.newScheduledThreadPool(1, r -> {
-            Thread t = new Thread(r, "coordinator-trigger-monitor");
+            Thread t = new Thread(r, "coordinator-trigger-" + groupId);
             t.setDaemon(true);
             return t;
         });
@@ -60,30 +54,30 @@ public class CoordinatorManager implements AutoCloseable {
 
     private void onCoordinatorStatusChange(boolean isCoordinator) {
         if (isCoordinator && monitoring.compareAndSet(false, true)) {
-            log.info("Became coordinator - starting trigger monitoring");
+            log.info("Became coordinator of group '{}' - starting trigger monitoring", groupId);
             triggerFuture = scheduler.scheduleWithFixedDelay(
                     this::evaluateTrigger,
                     0,
                     triggerCheckIntervalMs,
                     TimeUnit.MILLISECONDS);
         } else if (!isCoordinator && monitoring.compareAndSet(true, false)) {
-            log.info("Lost coordinator status - stopping trigger monitoring");
+            log.info("Lost coordinator status of group '{}' - stopping trigger monitoring", groupId);
             cancelTriggerFuture();
         }
     }
 
     private void evaluateTrigger() {
-        log.debug("Evaluating rebalance trigger");
+        log.debug("Evaluating rebalance trigger of group '{}'", groupId);
         if (!running.get() || !election.isCoordinator())
             return;
 
         try {
             if (trigger.shouldTrigger()) {
-                log.warn("Trigger condition met! Initiating rebalance...");
+                log.warn("Trigger condition met for group '{}'! Initiating rebalance...", groupId);
                 rebalanceInitiator.initiateRebalance();
             }
         } catch (Exception e) {
-            log.error("Error evaluating trigger", e);
+            log.error("Error evaluating the trigger of group '{}'", groupId, e);
         }
     }
 

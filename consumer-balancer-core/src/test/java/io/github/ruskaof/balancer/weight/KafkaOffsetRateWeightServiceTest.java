@@ -3,11 +3,13 @@ package io.github.ruskaof.balancer.weight;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.ListOffsetsResult.ListOffsetsResultInfo;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.common.KafkaFuture;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.Duration;
 import java.util.HashMap;
@@ -24,6 +26,7 @@ class KafkaOffsetRateWeightServiceTest {
 
     private static final TopicPartition T0 = new TopicPartition("t", 0);
     private static final TopicPartition T1 = new TopicPartition("t", 1);
+    private static final TopicPartition U0 = new TopicPartition("u", 0);
 
     private final Admin admin = mock(Admin.class);
     private final AtomicLong nanoTime = new AtomicLong();
@@ -121,13 +124,9 @@ class KafkaOffsetRateWeightServiceTest {
 
     @Test
     void failedListOffsetsThrowsIllegalState() {
-        KafkaFutureImpl<Map<TopicPartition, ListOffsetsResultInfo>> failed = new KafkaFutureImpl<>();
-        failed.completeExceptionally(new RuntimeException("boom"));
-        ListOffsetsResult result = mock(ListOffsetsResult.class);
-        when(result.all()).thenReturn(failed);
-        when(admin.listOffsets(anyMap())).thenReturn(result);
+        stubEndOffsets(Map.of(T1, 100L), Set.of(T0));
 
-        assertThrows(IllegalStateException.class, () -> service.computeWeights(Set.of(T0)));
+        assertThrows(IllegalStateException.class, () -> service.computeWeights(Set.of(T0, T1)));
     }
 
     @Test
@@ -136,11 +135,7 @@ class KafkaOffsetRateWeightServiceTest {
         service.computeWeights(Set.of(T0));
 
         advanceSeconds(30);
-        KafkaFutureImpl<Map<TopicPartition, ListOffsetsResultInfo>> failed = new KafkaFutureImpl<>();
-        failed.completeExceptionally(new RuntimeException("boom"));
-        ListOffsetsResult failedResult = mock(ListOffsetsResult.class);
-        when(failedResult.all()).thenReturn(failed);
-        when(admin.listOffsets(anyMap())).thenReturn(failedResult);
+        stubEndOffsets(Map.of(), Set.of(T0));
         assertDoesNotThrow(service::sampleQuietly);
 
         advanceSeconds(30);
@@ -151,18 +146,80 @@ class KafkaOffsetRateWeightServiceTest {
 
     @Test
     void countsFailedBackgroundSamples() {
-        stubEndOffsets(Map.of(T0, 100L));
-        service.computeWeights(Set.of(T0));
+        stubEndOffsets(Map.of(T0, 100L, T1, 100L));
+        service.computeWeights(Set.of(T0, T1));
         assertEquals(0, service.getSampleErrors());
 
-        KafkaFutureImpl<Map<TopicPartition, ListOffsetsResultInfo>> failed = new KafkaFutureImpl<>();
-        failed.completeExceptionally(new RuntimeException("boom"));
-        ListOffsetsResult failedResult = mock(ListOffsetsResult.class);
-        when(failedResult.all()).thenReturn(failed);
-        when(admin.listOffsets(anyMap())).thenReturn(failedResult);
+        stubEndOffsets(Map.of(T1, 100L), Set.of(T0));
         assertDoesNotThrow(service::sampleQuietly);
 
         assertEquals(1, service.getSampleErrors());
+    }
+
+    @Test
+    void servesSeveralGroupsWithDisjointPartitionSets() {
+        // Two groups asking in turn must not cost each other their baselines.
+        stubEndOffsets(Map.of(T0, 0L, U0, 0L));
+        service.computeWeights(Set.of(T0));
+        service.computeWeights(Set.of(U0));
+
+        advanceSeconds(60);
+        stubEndOffsets(Map.of(T0, 600L, U0, 1_200L));
+
+        assertEquals(Map.of(T0, 10.0), service.computeWeights(Set.of(T0)));
+        assertEquals(Map.of(U0, 20.0), service.computeWeights(Set.of(U0)));
+    }
+
+    @Test
+    void backgroundSamplesCoverEveryRequestedPartition() {
+        stubEndOffsets(Map.of(T0, 0L, U0, 0L));
+        service.computeWeights(Set.of(T0));
+        service.computeWeights(Set.of(U0));
+
+        advanceSeconds(60);
+        stubEndOffsets(Map.of(T0, 600L, U0, 1_200L));
+        service.sampleQuietly();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<TopicPartition, OffsetSpec>> request = ArgumentCaptor.forClass(Map.class);
+        verify(admin, atLeastOnce()).listOffsets(request.capture());
+        assertEquals(Set.of(T0, U0), request.getValue().keySet());
+
+        advanceSeconds(60);
+        stubEndOffsets(Map.of(T0, 1_200L, U0, 2_400L));
+
+        // Both baselines are the background sample taken at t=60s.
+        assertEquals(Map.of(T0, 10.0), service.computeWeights(Set.of(T0)));
+        assertEquals(Map.of(U0, 20.0), service.computeWeights(Set.of(U0)));
+    }
+
+    @Test
+    void stopsSamplingAPartitionThatKeepsFailingWhileOthersSucceed() {
+        stubEndOffsets(Map.of(T0, 0L, T1, 0L));
+        service.computeWeights(Set.of(T0, T1));
+
+        stubEndOffsets(Map.of(T0, 100L), Set.of(T1));
+        service.sampleQuietly();
+        service.sampleQuietly();
+        assertEquals(2, service.getTrackedPartitionCount());
+
+        service.sampleQuietly();
+        assertEquals(1, service.getTrackedPartitionCount());
+    }
+
+    @Test
+    void keepsSamplingWhenEveryPartitionFails() {
+        // A broken cluster is not a deleted topic: the histories must survive the outage.
+        stubEndOffsets(Map.of(T0, 0L, T1, 0L));
+        service.computeWeights(Set.of(T0, T1));
+
+        stubEndOffsets(Map.of(), Set.of(T0, T1));
+        for (int i = 0; i < 5; i++) {
+            service.sampleQuietly();
+        }
+
+        assertEquals(2, service.getTrackedPartitionCount());
+        assertEquals(5, service.getSampleErrors());
     }
 
     @Test
@@ -201,9 +258,18 @@ class KafkaOffsetRateWeightServiceTest {
     }
 
     private void stubEndOffsets(Map<TopicPartition, Long> endOffsets) {
+        stubEndOffsets(endOffsets, Set.of());
+    }
+
+    private void stubEndOffsets(Map<TopicPartition, Long> endOffsets, Set<TopicPartition> failing) {
         Map<TopicPartition, KafkaFuture<ListOffsetsResultInfo>> futures = new HashMap<>();
         endOffsets.forEach((tp, offset) -> futures.put(tp, KafkaFuture.completedFuture(
                 new ListOffsetsResultInfo(offset, 0L, Optional.empty()))));
+        for (TopicPartition tp : failing) {
+            KafkaFutureImpl<ListOffsetsResultInfo> failed = new KafkaFutureImpl<>();
+            failed.completeExceptionally(new RuntimeException("boom"));
+            futures.put(tp, failed);
+        }
         when(admin.listOffsets(anyMap())).thenReturn(new ListOffsetsResult(futures));
     }
 }

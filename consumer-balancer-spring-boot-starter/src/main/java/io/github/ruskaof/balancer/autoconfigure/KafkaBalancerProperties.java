@@ -16,8 +16,9 @@ public class KafkaBalancerProperties {
     private boolean enabled = true;
 
     /**
-     * When false, only the partition assignor path is used; coordinator election
-     * and proactive rebalances are off.
+     * When false, only the partition assignor path is used: groups registered with the
+     * auto-configured ConsumerGroupBalancers are passive, without coordinator election or
+     * proactive rebalances.
      */
     private boolean proactiveRebalanceEnabled = true;
 
@@ -77,12 +78,13 @@ public class KafkaBalancerProperties {
     private Duration rebalanceMaxCooldown = RebalanceDamping.DEFAULT_MAX_COOLDOWN;
 
     /**
-     * Listener container ids the proactive rebalance may touch — the id of a
-     * {@code @KafkaListener}, or the bean name of a programmatically registered endpoint.
-     * Empty means every registered container of spring.kafka.consumer.group-id. Set it
-     * when the application consumes from several Kafka clusters under the same group id:
-     * the group id alone does not tell the clusters apart, so without it one cluster's
-     * trigger would rebalance the containers of all of them.
+     * Listener container ids the proactive rebalance of the spring.kafka.consumer.group-id
+     * group may touch — the id of a {@code @KafkaListener}, or the bean name of a
+     * programmatically registered endpoint. Empty means every registered container of that
+     * group. Set it when the application consumes from several Kafka clusters under the same
+     * group id: the group id alone does not tell the clusters apart, so without it one
+     * cluster's trigger would rebalance the containers of all of them. Groups registered
+     * programmatically choose their containers through their own rebalance initiator.
      */
     private List<String> listenerIds = new ArrayList<>();
 

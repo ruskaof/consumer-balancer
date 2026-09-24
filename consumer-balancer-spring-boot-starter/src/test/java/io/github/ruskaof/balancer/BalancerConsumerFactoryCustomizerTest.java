@@ -3,6 +3,7 @@ package io.github.ruskaof.balancer;
 import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorConfig;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.weight.WeightService;
+import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
@@ -11,6 +12,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class BalancerConsumerFactoryCustomizerTest {
 
@@ -19,11 +21,10 @@ class BalancerConsumerFactoryCustomizerTest {
     private final MemberIdTracker memberIdTracker = new MemberIdTracker();
 
     @Test
-    void injectsContextCollaboratorsIntoFactoryConfigs() {
+    void injectsTheRegistryCollaboratorsIntoFactoryConfigs() {
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(new HashMap<>());
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker, "pod-1")
-                .customize(factory);
+        new BalancerConsumerFactoryCustomizer(balancers(true, "pod-1")).customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService)
@@ -39,8 +40,7 @@ class BalancerConsumerFactoryCustomizerTest {
         initial.put(LoadAwareAssignorConfig.INSTANCE_ID, "explicit-pod");
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(initial);
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker, "pod-1")
-                .customize(factory);
+        new BalancerConsumerFactoryCustomizer(balancers(true, "pod-1")).customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, "com.example.CustomWeightService")
@@ -49,11 +49,10 @@ class BalancerConsumerFactoryCustomizerTest {
     }
 
     @Test
-    void skipsTrackerKeyWhenTrackerIsAbsent() {
+    void skipsTrackerKeyWhileProactiveRebalanceIsOff() {
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(new HashMap<>());
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, null, null)
-                .customize(factory);
+        new BalancerConsumerFactoryCustomizer(balancers(false, null)).customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService)
@@ -64,11 +63,21 @@ class BalancerConsumerFactoryCustomizerTest {
     void skipsInstanceIdKeyWhenNotConfigured() {
         DefaultKafkaConsumerFactory<Object, Object> factory = factory(new HashMap<>());
 
-        new BalancerConsumerFactoryCustomizer(weightService, balanceService, memberIdTracker, " ")
-                .customize(factory);
+        new BalancerConsumerFactoryCustomizer(balancers(true, " ")).customize(factory);
 
         assertThat(factory.getConfigurationProperties())
                 .doesNotContainKey(LoadAwareAssignorConfig.INSTANCE_ID);
+    }
+
+    private ConsumerGroupBalancers balancers(boolean proactiveRebalance, String instanceId) {
+        return ConsumerGroupBalancers.builder()
+                .adminClient(mock(AdminClient.class))
+                .weightService(weightService)
+                .balanceService(balanceService)
+                .memberIdTracker(memberIdTracker)
+                .instanceId(instanceId)
+                .proactiveRebalance(proactiveRebalance)
+                .build();
     }
 
     private static DefaultKafkaConsumerFactory<Object, Object> factory(Map<String, Object> configs) {

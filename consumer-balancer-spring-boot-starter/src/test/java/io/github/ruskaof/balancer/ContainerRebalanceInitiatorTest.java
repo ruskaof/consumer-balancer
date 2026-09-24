@@ -4,13 +4,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.listener.MessageListenerContainer;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
-class ContainerRegistryRebalanceInitiatorTest {
+class ContainerRebalanceInitiatorTest {
 
     private final KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
 
@@ -20,10 +21,29 @@ class ContainerRegistryRebalanceInitiatorTest {
         MessageListenerContainer otherGroupContainer = container("other-group", "payments");
         register(coordinatedGroupContainer, otherGroupContainer);
 
-        new ContainerRegistryRebalanceInitiator(registry, "coordinated-group").initiateRebalance();
+        ContainerRebalanceInitiator.of("coordinated-group", registry).initiateRebalance();
 
         verify(coordinatedGroupContainer).enforceRebalance();
         verify(otherGroupContainer, never()).enforceRebalance();
+    }
+
+    @Test
+    void readsSelfManagedContainersFreshOnEveryRebalance() {
+        // Containers an application replaces whenever it rescans its topics, never registered
+        // with any KafkaListenerEndpointRegistry.
+        List<MessageListenerContainer> managed = new ArrayList<>();
+        ContainerRebalanceInitiator initiator = ContainerRebalanceInitiator.of("orders-group", () -> managed);
+        MessageListenerContainer first = container("orders-group", null);
+        managed.add(first);
+        initiator.initiateRebalance();
+
+        MessageListenerContainer replacement = container("orders-group", null);
+        managed.set(0, replacement);
+        initiator.initiateRebalance();
+
+        verify(first, times(1)).enforceRebalance();
+        verify(replacement, times(1)).enforceRebalance();
+        assertThat(initiator.getContainersEnforced()).isEqualTo(2);
     }
 
     @Test
@@ -34,7 +54,8 @@ class ContainerRegistryRebalanceInitiatorTest {
         MessageListenerContainer otherCluster = container("shared-group", "orders-on-cluster-b");
         register(thisCluster, otherCluster);
 
-        ContainerRegistryRebalanceInitiator.withListenerIds(registry, "shared-group", List.of("orders"))
+        ContainerRebalanceInitiator.of("shared-group", registry)
+                .onlyListenerIds(List.of("orders"))
                 .initiateRebalance();
 
         verify(thisCluster).enforceRebalance();
@@ -49,7 +70,8 @@ class ContainerRegistryRebalanceInitiatorTest {
         when(retryContainer.getMainListenerId()).thenReturn("orders");
         register(retryContainer);
 
-        ContainerRegistryRebalanceInitiator.withListenerIds(registry, "shared-group", List.of("orders"))
+        ContainerRebalanceInitiator.of("shared-group", registry)
+                .onlyListenerIds(List.of("orders"))
                 .initiateRebalance();
 
         verify(retryContainer).enforceRebalance();
@@ -61,7 +83,8 @@ class ContainerRegistryRebalanceInitiatorTest {
         MessageListenerContainer rejected = container("shared-group", "payments");
         register(selected, rejected);
 
-        new ContainerRegistryRebalanceInitiator(registry, "shared-group", selected::equals)
+        ContainerRebalanceInitiator.of("shared-group", registry)
+                .filter(selected::equals)
                 .initiateRebalance();
 
         verify(selected).enforceRebalance();
@@ -69,11 +92,27 @@ class ContainerRegistryRebalanceInitiatorTest {
     }
 
     @Test
+    void narrowingCombinesAndLeavesTheOriginalUntouched() {
+        MessageListenerContainer orders = container("shared-group", "orders");
+        MessageListenerContainer payments = container("shared-group", "payments");
+        register(orders, payments);
+        ContainerRebalanceInitiator everything = ContainerRebalanceInitiator.of("shared-group", registry);
+
+        everything.onlyListenerIds(List.of("orders", "payments"))
+                .filter(container -> !container.equals(payments))
+                .initiateRebalance();
+
+        verify(orders).enforceRebalance();
+        verify(payments, never()).enforceRebalance();
+        assertThat(everything.getInitiations()).isZero();
+    }
+
+    @Test
     void doesNothingWhenNoContainerMatches() {
         MessageListenerContainer otherGroupContainer = container("other-group", "payments");
         register(otherGroupContainer);
 
-        new ContainerRegistryRebalanceInitiator(registry, "coordinated-group").initiateRebalance();
+        ContainerRebalanceInitiator.of("coordinated-group", registry).initiateRebalance();
 
         verify(otherGroupContainer, never()).enforceRebalance();
     }
@@ -81,8 +120,7 @@ class ContainerRegistryRebalanceInitiatorTest {
     @Test
     void countsInitiationsAndEnforcedContainers() {
         register(container("coordinated-group", "orders"));
-        ContainerRegistryRebalanceInitiator initiator =
-                new ContainerRegistryRebalanceInitiator(registry, "coordinated-group");
+        ContainerRebalanceInitiator initiator = ContainerRebalanceInitiator.of("coordinated-group", registry);
 
         initiator.initiateRebalance();
 
@@ -94,8 +132,7 @@ class ContainerRegistryRebalanceInitiatorTest {
     @Test
     void countsInitiationsThatMatchedNoContainer() {
         register(container("other-group", "payments"));
-        ContainerRegistryRebalanceInitiator initiator =
-                new ContainerRegistryRebalanceInitiator(registry, "coordinated-group");
+        ContainerRebalanceInitiator initiator = ContainerRebalanceInitiator.of("coordinated-group", registry);
 
         initiator.initiateRebalance();
 
@@ -106,8 +143,7 @@ class ContainerRegistryRebalanceInitiatorTest {
 
     @Test
     void rejectsAnEmptyListenerIdSelection() {
-        assertThatThrownBy(() ->
-                ContainerRegistryRebalanceInitiator.withListenerIds(registry, "shared-group", List.of()))
+        assertThatThrownBy(() -> ContainerRebalanceInitiator.of("shared-group", registry).onlyListenerIds(List.of()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("listener id");
     }

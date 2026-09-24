@@ -17,8 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * With a MeterRegistry in the context, the starter binds the balancer's meters
- * automatically, all tagged with the consumer group. Nothing has run against the (dead)
- * broker yet, so every meter shows its documented initial value.
+ * automatically, the group meters tagged with the consumer group. Nothing has run against
+ * the (dead) broker yet, so every meter shows its documented initial value.
  */
 @SpringBootTest(classes = BalancerMetricsAutoConfigurationTest.TestApp.class, properties = {
         "spring.kafka.bootstrap-servers=127.0.0.1:9092",
@@ -48,8 +48,10 @@ class BalancerMetricsAutoConfigurationTest {
                 .tag("group", "test-group").gauge().value()).isZero();
         assertThat(meterRegistry.get("consumer.balancer.rebalance.initiations")
                 .tags("group", "test-group", "result", "no_match").functionCounter().count()).isZero();
-        assertThat(meterRegistry.get("consumer.balancer.offset.rate.tracked.partitions")
-                .tag("group", "test-group").gauge().value()).isZero();
+        // The weight store serves every group of the registry, so its meters carry no group tag.
+        var trackedPartitions = meterRegistry.get("consumer.balancer.offset.rate.tracked.partitions").gauge();
+        assertThat(trackedPartitions.value()).isZero();
+        assertThat(trackedPartitions.getId().getTag("group")).isNull();
     }
 
     @Configuration(proxyBeanMethods = false)
