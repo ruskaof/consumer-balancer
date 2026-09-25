@@ -125,15 +125,28 @@ public class ThresholdTrigger implements RebalanceTrigger {
         try {
             outcome = evaluate();
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Interrupted while running ThresholdTrigger", e);
-            outcome = EvaluationOutcome.ERROR;
+            return cancelled(e);
         } catch (Exception e) {
+            if (Thread.currentThread().isInterrupted()) {
+                // The interrupt surfaced wrapped, e.g. from inside the weight store.
+                return cancelled(e);
+            }
             log.error("Could not run ThresholdTrigger", e);
             outcome = EvaluationOutcome.ERROR;
         }
         recordEvaluation(outcome, System.nanoTime() - started);
         return outcome == EvaluationOutcome.FIRED;
+    }
+
+    /**
+     * The coordinator interrupts a running check when this instance loses the coordinator role
+     * or shuts down. That is a cancellation, not a failure: the check judged nothing, so nothing
+     * is recorded — reporting it as an error would raise an alert on every coordinator hand-over.
+     */
+    private boolean cancelled(Exception cause) {
+        Thread.currentThread().interrupt();
+        log.debug("ThresholdTrigger [group={}]: check cancelled by an interrupt", groupId, cause);
+        return false;
     }
 
     private EvaluationOutcome evaluate() throws Exception {
@@ -482,7 +495,11 @@ public class ThresholdTrigger implements RebalanceTrigger {
         INSTANCES_UNKNOWN,
         /** The group had no members, or none with assigned partitions. */
         NO_MEMBERS,
-        /** The evaluation threw; the exception was logged and swallowed. */
+        /**
+         * The evaluation threw; the exception was logged and swallowed. A check cancelled by an
+         * interrupt — the coordinator role moved, or the application is shutting down — is not
+         * an error and is not recorded at all.
+         */
         ERROR
     }
 

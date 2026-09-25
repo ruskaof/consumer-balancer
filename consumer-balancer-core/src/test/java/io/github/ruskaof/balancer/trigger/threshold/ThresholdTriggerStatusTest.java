@@ -218,6 +218,53 @@ class ThresholdTriggerStatusTest {
     }
 
     @Test
+    void aCheckCancelledByAnInterruptIsNeitherAnErrorNorAnEvaluation() {
+        // What the coordinator does to a running check when this instance loses the role.
+        KafkaFutureImpl<ConsumerGroupDescription> neverDescribed = new KafkaFutureImpl<>();
+        DescribeConsumerGroupsResult result = mock(DescribeConsumerGroupsResult.class);
+        when(result.describedGroups()).thenReturn(Map.of(GROUP, neverDescribed));
+        when(adminClient.describeConsumerGroups(List.of(GROUP))).thenReturn(result);
+        ThresholdTrigger trigger = eagerTrigger();
+
+        Thread.currentThread().interrupt();
+        boolean fired;
+        boolean stillInterrupted;
+        try {
+            fired = trigger.shouldTrigger();
+        } finally {
+            stillInterrupted = Thread.interrupted();
+        }
+
+        assertFalse(fired);
+        assertTrue(stillInterrupted, "the interrupt is kept for the scheduler that sent it");
+        assertEquals(0, trigger.status().evaluations(EvaluationOutcome.ERROR));
+        assertEquals(0, trigger.status().evaluationCount());
+    }
+
+    @Test
+    void anInterruptSurfacingWrappedFromTheWeightStoreIsACancellationToo() {
+        stubImbalancedGroup();
+        ThresholdTrigger trigger = new ThresholdTrigger(adminClient, GROUP, memberIdTracker,
+                partitions -> {
+                    // What the built-in stores do when interrupted mid-fetch.
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while listing Kafka end offsets");
+                },
+                1.1, new SortingRoundRobinBalanceService(), RebalanceDamping.none(), clock);
+
+        boolean fired;
+        try {
+            fired = trigger.shouldTrigger();
+        } finally {
+            Thread.interrupted();
+        }
+
+        assertFalse(fired);
+        assertEquals(0, trigger.status().evaluations(EvaluationOutcome.ERROR));
+        assertEquals(0, trigger.status().evaluationCount());
+    }
+
+    @Test
     void evaluationTotalsAccumulateAcrossOutcomes() {
         stubImbalancedGroup();
         weighImbalanced();
