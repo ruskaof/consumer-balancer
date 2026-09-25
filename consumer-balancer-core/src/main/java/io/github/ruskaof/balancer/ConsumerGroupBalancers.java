@@ -12,6 +12,7 @@ import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import io.github.ruskaof.balancer.weight.WeightService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -93,14 +94,17 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
     }
 
     /**
-     * The {@code assignor.load-aware.*} consumer configs that make a consumer's
-     * {@link LoadAwarePartitionAssignor} use this registry's collaborators. Put them into the
-     * config map of every consumer factory whose groups this registry balances, next to
-     * {@code partition.assignment.strategy}. The {@link MemberIdTracker} is left out while
-     * proactive rebalance is off: nothing would read what the assignor reports to it.
+     * The consumer configs that make a consumer use {@link LoadAwarePartitionAssignor} with this
+     * registry's collaborators: {@code partition.assignment.strategy} plus the
+     * {@code assignor.load-aware.*} keys. Put them into the config map of every consumer factory
+     * whose groups this registry balances — put them in first when the factory lists further
+     * assignors, e.g. while migrating a group, so its own strategy wins. The
+     * {@link MemberIdTracker} is left out while proactive rebalance is off: nothing would read
+     * what the assignor reports to it.
      */
     public Map<String, Object> assignorConfigs() {
         Map<String, Object> configs = new HashMap<>();
+        configs.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, LoadAwarePartitionAssignor.class.getName());
         configs.put(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService);
         configs.put(LoadAwareAssignorConfig.BALANCE_SERVICE, balanceService);
         if (proactiveRebalance) {

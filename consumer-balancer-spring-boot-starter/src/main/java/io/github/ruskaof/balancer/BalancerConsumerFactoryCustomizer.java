@@ -9,13 +9,14 @@ import java.util.Map;
 
 /**
  * Puts a {@link ConsumerGroupBalancers} registry's {@linkplain ConsumerGroupBalancers#assignorConfigs()
- * assignor configs} into a consumer factory, so {@link LoadAwarePartitionAssignor} uses the same
- * collaborators as the registry's rebalance triggers. The auto-configured instance customizes
- * Boot's auto-configured consumer factory; it can be applied to any other
- * {@link DefaultKafkaConsumerFactory} by hand.
+ * assignor configs} into a consumer factory, so the factory's consumers use
+ * {@link LoadAwarePartitionAssignor} with the same collaborators as the registry's rebalance
+ * triggers. The auto-configured instance customizes Boot's auto-configured consumer factory; it
+ * can be applied to any other {@link DefaultKafkaConsumerFactory} by hand.
  *
  * <p>Explicit user-provided values under the same keys (e.g. from
- * {@code spring.kafka.consumer.properties.*}) win over the registry's.
+ * {@code spring.kafka.consumer.properties.*}) win over the registry's — including
+ * {@code partition.assignment.strategy}, so an application that picked its own strategy keeps it.
  */
 @RequiredArgsConstructor
 public class BalancerConsumerFactoryCustomizer implements DefaultKafkaConsumerFactoryCustomizer {

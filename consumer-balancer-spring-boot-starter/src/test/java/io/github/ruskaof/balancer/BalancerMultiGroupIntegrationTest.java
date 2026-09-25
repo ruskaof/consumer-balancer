@@ -62,6 +62,8 @@ class BalancerMultiGroupIntegrationTest {
 
             assertThat(balancers.getGroups()).extracting(ConsumerGroupBalancer::getGroupId)
                     .containsExactly("orders", "payments");
+            assertThat(ordersConfigs.get(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG))
+                    .isEqualTo(LoadAwarePartitionAssignor.class.getName());
             assertThat(ordersConfigs.get(LoadAwareAssignorConfig.MEMBER_ID_TRACKER))
                     .isSameAs(balancers.getMemberIdTracker());
             assertThat(balancers.isRunning()).isTrue();
@@ -139,7 +141,6 @@ class BalancerMultiGroupIntegrationTest {
                 Map<String, Object> props = new HashMap<>();
                 props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:9092");
                 props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
-                props.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, LoadAwarePartitionAssignor.class.getName());
                 props.putAll(balancers.assignorConfigs());
                 factories.put(groupId, new DefaultKafkaConsumerFactory<>(props));
 

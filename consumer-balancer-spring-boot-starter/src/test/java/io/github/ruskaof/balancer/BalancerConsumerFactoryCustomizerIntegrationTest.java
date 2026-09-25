@@ -7,6 +7,7 @@ import io.github.ruskaof.balancer.autoconfigure.KafkaOffsetRateWeightAutoConfigu
 import io.github.ruskaof.balancer.autoconfigure.PrometheusWeightAutoConfiguration;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.weight.WeightService;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -39,6 +40,9 @@ class BalancerConsumerFactoryCustomizerIntegrationTest {
         Map<String, Object> configs = context.getBean(DefaultKafkaConsumerFactory.class)
                 .getConfigurationProperties();
 
+        // No strategy is configured here, so the starter's own applies.
+        assertThat(configs.get(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG))
+                .isEqualTo(LoadAwarePartitionAssignor.class.getName());
         assertThat(configs.get(LoadAwareAssignorConfig.WEIGHT_SERVICE))
                 .isSameAs(context.getBean(WeightService.class));
         assertThat(configs.get(LoadAwareAssignorConfig.BALANCE_SERVICE))

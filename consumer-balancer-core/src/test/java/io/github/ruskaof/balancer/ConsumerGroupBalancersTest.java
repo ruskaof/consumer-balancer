@@ -7,6 +7,7 @@ import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
 import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -44,6 +45,7 @@ class ConsumerGroupBalancersTest {
                 .build());
 
         assertEquals(Map.of(
+                        ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, LoadAwarePartitionAssignor.class.getName(),
                         LoadAwareAssignorConfig.WEIGHT_SERVICE, weights,
                         LoadAwareAssignorConfig.BALANCE_SERVICE, balance,
                         LoadAwareAssignorConfig.MEMBER_ID_TRACKER, balancers.getMemberIdTracker(),

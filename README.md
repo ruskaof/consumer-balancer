@@ -42,9 +42,9 @@ spring:
   kafka:
     consumer:
       group-id: my-group
-      properties:
-        partition.assignment.strategy: io.github.ruskaof.balancer.LoadAwarePartitionAssignor
 ```
+
+The starter sets `partition.assignment.strategy` of Boot's consumer factory to `LoadAwarePartitionAssignor`. A strategy you configure yourself under `spring.kafka.consumer.properties.partition.assignment.strategy` wins.
 
 Optionally tune the measurement window:
 
@@ -154,7 +154,7 @@ Note that `consumer-balancer.rebalance-load-imbalance-threshold` stays tight (`1
 
 Out of the box, the starter balances the group of `spring.kafka.consumer.group-id`. An application running several independent consumer groups — each with its own topics, `ConsumerFactory` and listener containers, possibly created by the application itself rather than by `@KafkaListener` — registers every group with the auto-configured `ConsumerGroupBalancers` bean instead. `spring.kafka.consumer.group-id` does not have to be set; without it, no group is registered automatically.
 
-Two things connect a group to the balancer: its consumer factory carries the balancer's assignor configs, and the group is registered with what forces its rebalance when the proactive trigger fires:
+Two things connect a group to the balancer: its consumer factory carries the balancer's assignor configs — `partition.assignment.strategy` included; to list further assignors, e.g. while migrating a group, put your own strategy after them — and the group is registered with what forces its rebalance when the proactive trigger fires:
 
 ```java
 @Configuration
@@ -164,8 +164,7 @@ class ConsumerGroupsConfig {
         for (GroupSpec spec : specs) {
             Map<String, Object> props = new HashMap<>(spec.consumerProps());
             props.put(ConsumerConfig.GROUP_ID_CONFIG, spec.groupId());
-            props.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, LoadAwarePartitionAssignor.class.getName());
-            props.putAll(balancers.assignorConfigs()); // weight store, balance service, member tracker, instance id
+            props.putAll(balancers.assignorConfigs()); // the assignor, its weight store, balance service, member tracker
             var factory = new DefaultKafkaConsumerFactory<>(props);
 
             var manager = new MyContainerManager(factory, spec); // creates and replaces its containers on topic rescans
@@ -234,7 +233,7 @@ Never share a registry, or its `MemberIdTracker`, between clusters: the tracker 
 
 ## Bean wiring
 
-The auto-configured `ConsumerGroupBalancers` bean is built from the context's `WeightService`, `BalanceService` and `MemberIdTracker` beans plus the `consumer-balancer.*` properties. Its `assignorConfigs()` — those collaborators and the instance id under the `assignor.load-aware.*` keys — are injected into Spring Boot's auto-configured consumer factory, so the assignor uses exactly the same collaborators as the rebalance trigger. Values set explicitly under `spring.kafka.consumer.properties.assignor.load-aware.*` win over the injected ones.
+The auto-configured `ConsumerGroupBalancers` bean is built from the context's `WeightService`, `BalanceService` and `MemberIdTracker` beans plus the `consumer-balancer.*` properties. Its `assignorConfigs()` — `partition.assignment.strategy`, plus those collaborators and the instance id under the `assignor.load-aware.*` keys — are injected into Spring Boot's auto-configured consumer factory, so the consumer uses `LoadAwarePartitionAssignor` with exactly the same collaborators as the rebalance trigger. Values set explicitly under `spring.kafka.consumer.properties.*` win over the injected ones.
 
 If you define your own `ConsumerFactory` bean, Boot's factory customizers do not run for it — put `balancers.assignorConfigs()` into its configs yourself (or apply the `BalancerConsumerFactoryCustomizer` bean to it), as in [Several consumer groups](#several-consumer-groups).
 
@@ -343,8 +342,7 @@ ConsumerGroupBalancers balancers = ConsumerGroupBalancers.builder()
 Map<String, Object> configs = new HashMap<>();
 configs.put("bootstrap.servers", "localhost:9092");
 configs.put("group.id", "my-group");
-configs.put("partition.assignment.strategy", LoadAwarePartitionAssignor.class.getName());
-configs.putAll(balancers.assignorConfigs()); // weight service, balance service, member tracker
+configs.putAll(balancers.assignorConfigs()); // the assignor, its weight service, balance service, member tracker
 
 var consumer = new KafkaConsumer<>(configs, new StringDeserializer(), new ByteArrayDeserializer());
 // Called on the coordinator's thread when the group should rebalance; KafkaConsumer is not

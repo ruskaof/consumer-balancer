@@ -27,10 +27,24 @@ class BalancerConsumerFactoryCustomizerTest {
         new BalancerConsumerFactoryCustomizer(balancers(true, "pod-1")).customize(factory);
 
         assertThat(factory.getConfigurationProperties())
+                .containsEntry(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, LoadAwarePartitionAssignor.class.getName())
                 .containsEntry(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService)
                 .containsEntry(LoadAwareAssignorConfig.BALANCE_SERVICE, balanceService)
                 .containsEntry(LoadAwareAssignorConfig.MEMBER_ID_TRACKER, memberIdTracker)
                 .containsEntry(LoadAwareAssignorConfig.INSTANCE_ID, "pod-1");
+    }
+
+    @Test
+    void keepsAStrategyTheApplicationPickedItself() {
+        Map<String, Object> initial = new HashMap<>();
+        initial.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, "org.apache.kafka.clients.consumer.RangeAssignor");
+        DefaultKafkaConsumerFactory<Object, Object> factory = factory(initial);
+
+        new BalancerConsumerFactoryCustomizer(balancers(true, null)).customize(factory);
+
+        assertThat(factory.getConfigurationProperties())
+                .containsEntry(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
+                        "org.apache.kafka.clients.consumer.RangeAssignor");
     }
 
     @Test
