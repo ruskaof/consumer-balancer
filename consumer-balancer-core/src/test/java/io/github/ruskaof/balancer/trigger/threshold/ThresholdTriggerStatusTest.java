@@ -207,6 +207,22 @@ class ThresholdTriggerStatusTest {
     }
 
     @Test
+    void checksWithoutAnyUsableWeightAreCountedAndKeepTheLastRatio() {
+        stubImbalancedGroup();
+        weighImbalanced();
+        ThresholdTrigger trigger = eagerTrigger();
+        assertTrue(trigger.shouldTrigger());
+
+        weights.clear();
+        assertFalse(trigger.shouldTrigger());
+
+        ThresholdTrigger.Status status = trigger.status();
+        assertEquals(1, status.evaluations(EvaluationOutcome.WEIGHTS_UNKNOWN));
+        assertEquals(2, status.lastDefaultedWeightCount(), "the skip is explained by the defaulted-weights gauge");
+        assertEquals(2.0, status.lastRatio(), "a skipped check keeps the last computed ratio");
+    }
+
+    @Test
     void swallowedEvaluationErrorsAreCounted() {
         when(adminClient.describeConsumerGroups(List.of(GROUP))).thenThrow(new RuntimeException("boom"));
         ThresholdTrigger trigger = eagerTrigger();
