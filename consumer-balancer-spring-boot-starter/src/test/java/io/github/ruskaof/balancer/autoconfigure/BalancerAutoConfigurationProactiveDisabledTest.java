@@ -1,6 +1,6 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
-import io.github.ruskaof.balancer.trigger.CoordinatorManager;
+import io.github.ruskaof.balancer.ConsumerGroupBalancers;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,9 +23,12 @@ class BalancerAutoConfigurationProactiveDisabledTest {
     ApplicationContext context;
 
     @Test
-    void loadsWeightServiceButNotCoordinatorWhenProactiveRebalanceDisabled() {
+    void loadsWeightServiceButRegistersTheGroupPassiveWhenProactiveRebalanceDisabled() {
         assertThat(context.getBean(WeightService.class)).isNotNull();
-        assertThat(context.getBeanNamesForType(CoordinatorManager.class)).isEmpty();
+        ConsumerGroupBalancers balancers = context.getBean(ConsumerGroupBalancers.class);
+        assertThat(balancers.isProactiveRebalance()).isFalse();
+        assertThat(balancers.getGroup("test-group"))
+                .hasValueSatisfying(group -> assertThat(group.isProactive()).isFalse());
     }
 
     @SpringBootApplication(exclude = KafkaAutoConfiguration.class)

@@ -4,7 +4,6 @@ import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorCo
 import io.github.ruskaof.balancer.autoconfigure.BalancerAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.DefaultBalanceServiceAutoConfiguration;
 import io.github.ruskaof.balancer.autoconfigure.KafkaOffsetRateWeightAutoConfiguration;
-import io.github.ruskaof.balancer.trigger.CoordinatorManager;
 import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
 import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -47,14 +46,16 @@ class BalancerProactiveMemberTrackerIntegrationTest {
 
         assertThat(factory.getConfigurationProperties().get(LoadAwareAssignorConfig.MEMBER_ID_TRACKER))
                 .isSameAs(context.getBean(MemberIdTracker.class));
-        assertThat(context.getBean(CoordinatorManager.class)).isNotNull();
+        assertThat(context.getBean(ConsumerGroupBalancers.class).getGroup("test-group"))
+                .hasValueSatisfying(group -> assertThat(group.isProactive()).isTrue());
     }
 
     @Test
     void triggerReadsTheSameTrackerTheAssignorWritesTo() throws Exception {
         // A second tracker anywhere in this wiring would leave the trigger with an empty
         // mapping forever, and it would silently skip every check.
-        RebalanceTrigger trigger = context.getBean(RebalanceTrigger.class);
+        RebalanceTrigger trigger = context.getBean(ConsumerGroupBalancers.class)
+                .getGroup("test-group").orElseThrow().getTrigger();
         Field field = ThresholdTrigger.class.getDeclaredField("memberIdTracker");
         field.setAccessible(true);
 

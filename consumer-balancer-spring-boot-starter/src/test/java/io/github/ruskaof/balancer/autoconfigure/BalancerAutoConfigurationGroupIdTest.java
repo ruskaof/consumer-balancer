@@ -1,27 +1,39 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
+import io.github.ruskaof.balancer.BalancerConsumerFactoryCustomizer;
+import io.github.ruskaof.balancer.ConsumerGroupBalancers;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
-import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The proactive path is on by default, so a missing spring.kafka.consumer.group-id must
- * fail with a message naming the property and the switch that disables the path.
+ * Applications running several consumer groups often set no spring.kafka.consumer.group-id at
+ * all. Without it there is no default group to balance, but the context must still start with
+ * the shared balancer in place, ready for the application to register its own groups.
  */
 class BalancerAutoConfigurationGroupIdTest {
 
-    @Test
-    void proactiveBeansFailWithActionableMessageWithoutConsumerGroupId() {
-        var configuration = new BalancerAutoConfiguration.ProactiveRebalanceConfiguration();
-        KafkaProperties kafkaProperties = new KafkaProperties();
+    private final ApplicationContextRunner runner = new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(
+                    KafkaAutoConfiguration.class,
+                    DefaultBalanceServiceAutoConfiguration.class,
+                    KafkaOffsetRateWeightAutoConfiguration.class,
+                    PrometheusWeightAutoConfiguration.class,
+                    BalancerAutoConfiguration.class))
+            .withPropertyValues("spring.kafka.bootstrap-servers=127.0.0.1:9092");
 
-        assertThatThrownBy(() -> configuration.rebalanceInitiator(
-                mock(KafkaListenerEndpointRegistry.class), kafkaProperties, new KafkaBalancerProperties()))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("spring.kafka.consumer.group-id")
-                .hasMessageContaining("consumer-balancer.proactive-rebalance-enabled=false");
+    @Test
+    void startsWithoutADefaultGroupWhenNoGroupIdIsSet() {
+        runner.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(BalancerConsumerFactoryCustomizer.class);
+
+            ConsumerGroupBalancers balancers = context.getBean(ConsumerGroupBalancers.class);
+            assertThat(balancers.getGroups()).isEmpty();
+            assertThat(balancers.isRunning()).isTrue();
+        });
     }
 }

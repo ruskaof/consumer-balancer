@@ -1,29 +1,30 @@
 package io.github.ruskaof.balancer.autoconfigure;
 
 import io.github.ruskaof.balancer.BalancerConsumerFactoryCustomizer;
-import io.github.ruskaof.balancer.ContainerRegistryRebalanceInitiator;
-import io.github.ruskaof.balancer.CoordinatorManagerLifecycle;
+import io.github.ruskaof.balancer.ConsumerGroupBalancers;
+import io.github.ruskaof.balancer.ConsumerGroupBalancersLifecycle;
+import io.github.ruskaof.balancer.ContainerRebalanceInitiator;
 import io.github.ruskaof.balancer.MemberIdTracker;
 import io.github.ruskaof.balancer.balance.BalanceService;
-import io.github.ruskaof.balancer.trigger.CoordinatorElection;
-import io.github.ruskaof.balancer.trigger.CoordinatorManager;
+import io.github.ruskaof.balancer.trigger.RebalanceInitiator;
 import io.github.ruskaof.balancer.trigger.RebalanceTrigger;
-import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import io.github.ruskaof.balancer.weight.WeightService;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.ListenerContainerRegistry;
 
-import java.time.Clock;
 import java.util.List;
 
+@Slf4j
 @AutoConfiguration(after = {
         DefaultBalanceServiceAutoConfiguration.class,
         KafkaOffsetRateWeightAutoConfiguration.class,
@@ -33,132 +34,109 @@ import java.util.List;
 @ConditionalOnProperty(name = "consumer-balancer.enabled", havingValue = "true", matchIfMissing = true)
 public class BalancerAutoConfiguration {
 
+    public static final String ADMIN_CLIENT_BEAN_NAME = "kafkaBalancerAdminClient";
+    public static final String BALANCERS_BEAN_NAME = "consumerGroupBalancers";
+
     /**
-     * Shared by the default offset-rate weight store and, when proactive rebalance is
-     * enabled, coordinator election and the threshold trigger.
+     * Shared by the default offset-rate weight store and the coordinator election and trigger
+     * of every group registered with the auto-configured {@link ConsumerGroupBalancers}.
      */
-    @Bean(destroyMethod = "close")
+    @Bean(name = ADMIN_CLIENT_BEAN_NAME, destroyMethod = "close")
     public AdminClient kafkaBalancerAdminClient(KafkaProperties kafkaProperties) {
         // Full admin properties so security settings like SSL/SASL from
         // spring.kafka.* apply to the balancer's admin client too.
         return AdminClient.create(kafkaProperties.buildAdminProperties());
     }
 
+    @Bean
+    @ConditionalOnMissingBean(MemberIdTracker.class)
+    public MemberIdTracker memberIdTracker() {
+        return new MemberIdTracker();
+    }
+
     /**
-     * Puts the context's {@link WeightService}/{@link BalanceService} (and
-     * {@link MemberIdTracker} when proactive rebalance is enabled) and the configured
-     * instance id into the auto-configured consumer factory's configs, where
-     * {@code LoadAwarePartitionAssignor} picks them up. Registered even when proactive
-     * rebalance is disabled — the assignor path needs weights either way.
+     * The balancer of the cluster {@code spring.kafka.*} points at. Applications register
+     * their consumer groups with it; the group of {@code spring.kafka.consumer.group-id}, when
+     * set, is registered here already.
+     *
+     * <p>Deliberately not {@code @ConditionalOnMissingBean}: a registry the application declares
+     * for a second Kafka cluster must not replace this one. Turn it off with
+     * {@code consumer-balancer.enabled=false}.
+     */
+    @Bean(name = BALANCERS_BEAN_NAME, destroyMethod = "close")
+    public ConsumerGroupBalancers consumerGroupBalancers(
+            @Qualifier(ADMIN_CLIENT_BEAN_NAME) AdminClient kafkaBalancerAdminClient,
+            WeightService weightService,
+            BalanceService balanceService,
+            MemberIdTracker memberIdTracker,
+            KafkaBalancerProperties properties,
+            KafkaProperties kafkaProperties,
+            ObjectProvider<RebalanceInitiator> rebalanceInitiator,
+            ObjectProvider<RebalanceTrigger> rebalanceTrigger,
+            ObjectProvider<KafkaListenerEndpointRegistry> endpointRegistry) {
+        ConsumerGroupBalancers balancers = ConsumerGroupBalancers.builder()
+                .adminClient(kafkaBalancerAdminClient)
+                .weightService(weightService)
+                .balanceService(balanceService)
+                .memberIdTracker(memberIdTracker)
+                .instanceId(properties.getInstanceId())
+                .proactiveRebalance(properties.isProactiveRebalanceEnabled())
+                .imbalanceThreshold(properties.getRebalanceLoadImbalanceThreshold())
+                .damping(properties.toRebalanceDamping())
+                .electionInterval(properties.getCoordinator().getElectionInterval())
+                .triggerCheckInterval(properties.getCoordinator().getTriggerCheckInterval())
+                .build();
+
+        String groupId = kafkaProperties.getConsumer().getGroupId();
+        if (groupId == null || groupId.isBlank()) {
+            if (properties.isProactiveRebalanceEnabled()) {
+                log.info("spring.kafka.consumer.group-id is not set, so no consumer group is balanced proactively"
+                        + " out of the box; register your groups with the ConsumerGroupBalancers bean");
+            }
+            return balancers;
+        }
+        if (!properties.isProactiveRebalanceEnabled()) {
+            balancers.register(groupId, null);
+            return balancers;
+        }
+        balancers.group(groupId)
+                .rebalanceInitiator(rebalanceInitiator.getIfUnique(
+                        () -> defaultRebalanceInitiator(groupId, endpointRegistry.getObject(), properties)))
+                .trigger(rebalanceTrigger.getIfUnique())
+                .register();
+        return balancers;
+    }
+
+    /**
+     * Puts the auto-configured registry's assignor configs into Boot's auto-configured consumer
+     * factory, where {@code LoadAwarePartitionAssignor} picks them up. Registered even when
+     * proactive rebalance is disabled — the assignor path needs weights either way.
      */
     @Bean
     @ConditionalOnMissingBean(BalancerConsumerFactoryCustomizer.class)
     public BalancerConsumerFactoryCustomizer balancerConsumerFactoryCustomizer(
-            WeightService weightService,
-            BalanceService balanceService,
-            ObjectProvider<MemberIdTracker> memberIdTracker,
-            KafkaBalancerProperties kafkaBalancerProperties) {
-        return new BalancerConsumerFactoryCustomizer(
-                weightService,
-                balanceService,
-                memberIdTracker.getIfAvailable(),
-                kafkaBalancerProperties.getInstanceId());
+            @Qualifier(BALANCERS_BEAN_NAME) ConsumerGroupBalancers consumerGroupBalancers) {
+        return new BalancerConsumerFactoryCustomizer(consumerGroupBalancers);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(ConsumerGroupBalancersLifecycle.class)
+    public ConsumerGroupBalancersLifecycle consumerGroupBalancersLifecycle(
+            ObjectProvider<ConsumerGroupBalancers> consumerGroupBalancers) {
+        return new ConsumerGroupBalancersLifecycle(consumerGroupBalancers.orderedStream().toList());
     }
 
     /**
-     * The proactive path for the consumer group of Spring Boot's auto-configured Kafka
-     * consumer. Every bean here backs off when the application defines its own, so a second
-     * Kafka cluster can be served by a hand-wired stack of the same beans — see the
-     * multi-cluster section of the README.
+     * Rebalances the registered listener containers of the group, restricted to
+     * {@code consumer-balancer.listener-ids} when set — the group id alone does not tell two
+     * Kafka clusters apart.
      */
-    @Configuration(proxyBeanMethods = false)
-    @ConditionalOnProperty(name = "consumer-balancer.proactive-rebalance-enabled", havingValue = "true", matchIfMissing = true)
-    static class ProactiveRebalanceConfiguration {
-
-        @Bean
-        @ConditionalOnMissingBean(MemberIdTracker.class)
-        public MemberIdTracker memberIdTracker() {
-            return new MemberIdTracker();
-        }
-
-        @Bean
-        @ConditionalOnMissingBean(RebalanceTrigger.class)
-        public RebalanceTrigger rebalanceTrigger(
-                AdminClient kafkaBalancerAdminClient,
-                KafkaProperties kafkaProperties,
-                MemberIdTracker memberIdTracker,
-                WeightService weightService,
-                BalanceService balanceService,
-                KafkaBalancerProperties kafkaBalancerProperties) {
-            return new ThresholdTrigger(
-                    kafkaBalancerAdminClient,
-                    requireConsumerGroupId(kafkaProperties),
-                    memberIdTracker,
-                    weightService,
-                    kafkaBalancerProperties.getRebalanceLoadImbalanceThreshold(),
-                    balanceService,
-                    kafkaBalancerProperties.toRebalanceDamping(),
-                    Clock.systemUTC());
-        }
-
-        /**
-         * Rebalances the containers of the consumer group, restricted to
-         * {@code consumer-balancer.listener-ids} when set — the group id alone does not tell
-         * two Kafka clusters apart.
-         */
-        @Bean
-        @ConditionalOnMissingBean(CoordinatorManager.RebalanceInitiator.class)
-        public CoordinatorManager.RebalanceInitiator rebalanceInitiator(
-                KafkaListenerEndpointRegistry registry,
-                KafkaProperties kafkaProperties,
-                KafkaBalancerProperties kafkaBalancerProperties) {
-            String groupId = requireConsumerGroupId(kafkaProperties);
-            List<String> listenerIds = kafkaBalancerProperties.getListenerIds();
-            return listenerIds.isEmpty()
-                    ? new ContainerRegistryRebalanceInitiator(registry, groupId)
-                    : ContainerRegistryRebalanceInitiator.withListenerIds(registry, groupId, listenerIds);
-        }
-
-        @Bean
-        @ConditionalOnMissingBean(CoordinatorManager.class)
-        public CoordinatorManager coordinatorManager(
-                MemberIdTracker memberIdTracker,
-                RebalanceTrigger trigger,
-                CoordinatorManager.RebalanceInitiator rebalanceInitiator,
-                KafkaBalancerProperties properties,
-                KafkaProperties kafkaProperties,
-                AdminClient kafkaBalancerAdminClient) {
-            String groupId = requireConsumerGroupId(kafkaProperties);
-
-            CoordinatorElection election = new CoordinatorElection.Builder()
-                    .setGroupId(groupId)
-                    .setMemberIdsSupplier(() -> memberIdTracker.getCurrentMemberIds(groupId))
-                    .setElectionIntervalMs(properties.getCoordinator().getElectionInterval().toMillis())
-                    .setAdminClient(kafkaBalancerAdminClient)
-                    .build();
-
-            return new CoordinatorManager(
-                    election,
-                    trigger,
-                    rebalanceInitiator,
-                    properties.getCoordinator().getTriggerCheckInterval().toMillis());
-        }
-
-        @Bean
-        @ConditionalOnMissingBean(CoordinatorManagerLifecycle.class)
-        public CoordinatorManagerLifecycle coordinatorManagerLifecycle(CoordinatorManager coordinatorManager) {
-            return new CoordinatorManagerLifecycle(coordinatorManager);
-        }
-
-        private static String requireConsumerGroupId(KafkaProperties kafkaProperties) {
-            String groupId = kafkaProperties.getConsumer().getGroupId();
-            if (groupId == null || groupId.isBlank()) {
-                throw new IllegalStateException(
-                        "consumer-balancer proactive rebalance requires spring.kafka.consumer.group-id."
-                                + " Set it, or turn the proactive path off with"
-                                + " consumer-balancer.proactive-rebalance-enabled=false.");
-            }
-            return groupId;
-        }
+    static RebalanceInitiator defaultRebalanceInitiator(
+            String groupId,
+            ListenerContainerRegistry registry,
+            KafkaBalancerProperties properties) {
+        ContainerRebalanceInitiator initiator = ContainerRebalanceInitiator.of(groupId, registry);
+        List<String> listenerIds = properties.getListenerIds();
+        return listenerIds.isEmpty() ? initiator : initiator.onlyListenerIds(listenerIds);
     }
 }

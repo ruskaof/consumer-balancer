@@ -94,6 +94,10 @@ public class CoordinatorElection implements AutoCloseable {
         }
     }
 
+    public String getGroupId() {
+        return groupId;
+    }
+
     /** Current coordinator status (thread-safe) */
     public boolean isCoordinator() {
         return isCoordinator.get();

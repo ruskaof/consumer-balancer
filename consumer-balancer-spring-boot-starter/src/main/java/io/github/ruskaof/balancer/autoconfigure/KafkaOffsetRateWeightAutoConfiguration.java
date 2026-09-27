@@ -3,6 +3,7 @@ package io.github.ruskaof.balancer.autoconfigure;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -22,7 +23,7 @@ public class KafkaOffsetRateWeightAutoConfiguration {
 
     @Bean(destroyMethod = "close")
     public KafkaOffsetRateWeightService offsetRateWeightService(
-            AdminClient kafkaBalancerAdminClient,
+            @Qualifier(BalancerAutoConfiguration.ADMIN_CLIENT_BEAN_NAME) AdminClient kafkaBalancerAdminClient,
             KafkaBalancerProperties kafkaBalancerProperties) {
         KafkaBalancerProperties.OffsetRate offsetRate = kafkaBalancerProperties.getOffsetRate();
         return offsetRate.getSampleInterval() == null

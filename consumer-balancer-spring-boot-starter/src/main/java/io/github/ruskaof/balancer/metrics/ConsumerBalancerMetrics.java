@@ -1,82 +1,102 @@
 package io.github.ruskaof.balancer.metrics;
 
-import io.github.ruskaof.balancer.ContainerRegistryRebalanceInitiator;
-import io.github.ruskaof.balancer.trigger.CoordinatorManager;
+import io.github.ruskaof.balancer.ConsumerGroupBalancer;
+import io.github.ruskaof.balancer.ConsumerGroupBalancers;
+import io.github.ruskaof.balancer.ContainerRebalanceInitiator;
 import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.FunctionTimer;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.TimeGauge;
 import io.micrometer.core.instrument.binder.MeterBinder;
 
 import java.time.Instant;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Locale;
-import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Binds the balancer's meters — all prefixed {@code consumer.balancer.} and tagged with the
- * consumer group — to a registry. Every component is optional: a {@code null} component
- * simply binds no meters, so the binder adapts to whatever the application wired (e.g. a
- * custom {@code RebalanceTrigger} that is not a {@link ThresholdTrigger}).
+ * Binds the meters of one or more {@link ConsumerGroupBalancers} registries — all prefixed
+ * {@code consumer.balancer.} and tagged with the registry's {@linkplain ConsumerGroupBalancers#getTags()
+ * tags} — to a meter registry:
+ * <ul>
+ *   <li>per registry, the offset-rate weight store meters, when its weight store is a
+ *       {@link KafkaOffsetRateWeightService};</li>
+ *   <li>per registered group, tagged {@code group}: the coordinator gauge, the trigger meters
+ *       when its trigger is a {@link ThresholdTrigger}, and the rebalance counters when its
+ *       initiator is a {@link ContainerRebalanceInitiator}. Groups registered after binding
+ *       get their meters on registration.</li>
+ * </ul>
+ * Components of other types bind no meters, so the binder adapts to whatever was wired.
  *
  * <p>Trigger meters read the {@link ThresholdTrigger.Status} snapshot, which only advances
  * on the instance currently elected coordinator; on all other instances they keep their
  * initial values ({@code NaN}/0). Aggregate across instances with {@code max}, or join on
  * {@code consumer.balancer.coordinator == 1}.
  *
- * <p>The auto-configuration registers one binder for the auto-configured balancer stack. An
- * application running hand-wired stacks against several Kafka clusters instantiates one
- * binder per stack, with an extra tag telling the clusters apart.
+ * <p>The auto-configuration binds every {@code ConsumerGroupBalancers} bean. A registry the
+ * application builds outside the context is bound with one call:
+ * {@code ConsumerBalancerMetrics.of(balancers).bindTo(meterRegistry)}.
  */
 public final class ConsumerBalancerMetrics implements MeterBinder {
 
-    private final Tags tags;
-    private final ThresholdTrigger trigger;
-    private final CoordinatorManager coordinatorManager;
-    private final ContainerRegistryRebalanceInitiator rebalanceInitiator;
-    private final KafkaOffsetRateWeightService offsetRateWeightService;
+    private final List<ConsumerGroupBalancers> balancers;
+    // Spring Boot binds MeterBinder beans itself too; a second bind must not register a
+    // second group listener on every registry.
+    private final Set<MeterRegistry> boundTo = Collections.newSetFromMap(new IdentityHashMap<>());
 
-    /**
-     * @param tags                    common tags for every meter; include the consumer group
-     * @param trigger                 may be {@code null}: skips the trigger meters
-     * @param coordinatorManager      may be {@code null}: skips the coordinator gauge
-     * @param rebalanceInitiator      may be {@code null}: skips the rebalance counters
-     * @param offsetRateWeightService may be {@code null}: skips the offset-rate meters
-     */
-    public ConsumerBalancerMetrics(
-            Tags tags,
-            ThresholdTrigger trigger,
-            CoordinatorManager coordinatorManager,
-            ContainerRegistryRebalanceInitiator rebalanceInitiator,
-            KafkaOffsetRateWeightService offsetRateWeightService) {
-        this.tags = Objects.requireNonNull(tags, "tags");
-        this.trigger = trigger;
-        this.coordinatorManager = coordinatorManager;
-        this.rebalanceInitiator = rebalanceInitiator;
-        this.offsetRateWeightService = offsetRateWeightService;
+    private ConsumerBalancerMetrics(List<ConsumerGroupBalancers> balancers) {
+        this.balancers = List.copyOf(balancers);
+    }
+
+    public static ConsumerBalancerMetrics of(ConsumerGroupBalancers... balancers) {
+        return new ConsumerBalancerMetrics(List.of(balancers));
+    }
+
+    public static ConsumerBalancerMetrics of(Collection<ConsumerGroupBalancers> balancers) {
+        return new ConsumerBalancerMetrics(List.copyOf(balancers));
     }
 
     @Override
     public void bindTo(MeterRegistry registry) {
-        if (trigger != null) {
-            bindTrigger(registry);
+        synchronized (boundTo) {
+            if (!boundTo.add(registry)) {
+                return;
+            }
         }
-        if (coordinatorManager != null) {
-            bindCoordinator(registry);
-        }
-        if (rebalanceInitiator != null) {
-            bindRebalanceInitiator(registry);
-        }
-        if (offsetRateWeightService != null) {
-            bindOffsetRateWeightService(registry);
+        for (ConsumerGroupBalancers registryBalancers : balancers) {
+            Tags tags = Tags.of(registryBalancers.getTags().entrySet().stream()
+                    .map(tag -> Tag.of(tag.getKey(), tag.getValue()))
+                    .toList());
+            if (registryBalancers.getWeightService() instanceof KafkaOffsetRateWeightService offsetRate) {
+                bindOffsetRateWeightService(registry, tags, offsetRate);
+            }
+            registryBalancers.onRegister(group -> bindGroup(registry, tags.and("group", group.getGroupId()), group));
         }
     }
 
-    private void bindTrigger(MeterRegistry registry) {
+    private static void bindGroup(MeterRegistry registry, Tags tags, ConsumerGroupBalancer group) {
+        if (!group.isProactive()) {
+            return;
+        }
+        bindCoordinator(registry, tags, group);
+        if (group.getTrigger() instanceof ThresholdTrigger trigger) {
+            bindTrigger(registry, tags, trigger);
+        }
+        if (group.getRebalanceInitiator() instanceof ContainerRebalanceInitiator initiator) {
+            bindRebalanceInitiator(registry, tags, initiator);
+        }
+    }
+
+    private static void bindTrigger(MeterRegistry registry, Tags tags, ThresholdTrigger trigger) {
         Gauge.builder("consumer.balancer.trigger.imbalance.ratio", trigger, t -> t.status().lastRatio())
                 .description("Max instance load divided by the optimal max instance load, from the last evaluation"
                         + " that computed it; NaN until then")
@@ -147,14 +167,15 @@ public final class ConsumerBalancerMetrics implements MeterBinder {
                 .register(registry);
     }
 
-    private void bindCoordinator(MeterRegistry registry) {
-        Gauge.builder("consumer.balancer.coordinator", coordinatorManager, m -> m.isCoordinator() ? 1.0 : 0.0)
+    private static void bindCoordinator(MeterRegistry registry, Tags tags, ConsumerGroupBalancer group) {
+        Gauge.builder("consumer.balancer.coordinator", group, g -> g.isCoordinator() ? 1.0 : 0.0)
                 .description("1 while this instance holds the group's coordinator role, 0 otherwise")
                 .tags(tags)
                 .register(registry);
     }
 
-    private void bindRebalanceInitiator(MeterRegistry registry) {
+    private static void bindRebalanceInitiator(
+            MeterRegistry registry, Tags tags, ContainerRebalanceInitiator rebalanceInitiator) {
         FunctionCounter.builder("consumer.balancer.rebalance.initiations", rebalanceInitiator,
                         i -> i.getInitiations() - i.getNoMatchInitiations())
                 .description("Proactive rebalance initiations by whether any listener container matched")
@@ -162,23 +183,24 @@ public final class ConsumerBalancerMetrics implements MeterBinder {
                 .tag("result", "enforced")
                 .register(registry);
         FunctionCounter.builder("consumer.balancer.rebalance.initiations", rebalanceInitiator,
-                        ContainerRegistryRebalanceInitiator::getNoMatchInitiations)
+                        ContainerRebalanceInitiator::getNoMatchInitiations)
                 .description("Proactive rebalance initiations by whether any listener container matched")
                 .tags(tags)
                 .tag("result", "no_match")
                 .register(registry);
         FunctionCounter.builder("consumer.balancer.rebalance.containers.enforced", rebalanceInitiator,
-                        ContainerRegistryRebalanceInitiator::getContainersEnforced)
+                        ContainerRebalanceInitiator::getContainersEnforced)
                 .description("Listener containers on which a rebalance was enforced")
                 .tags(tags)
                 .register(registry);
     }
 
-    private void bindOffsetRateWeightService(MeterRegistry registry) {
+    private static void bindOffsetRateWeightService(
+            MeterRegistry registry, Tags tags, KafkaOffsetRateWeightService offsetRateWeightService) {
         FunctionCounter.builder("consumer.balancer.offset.rate.sample.errors", offsetRateWeightService,
                         KafkaOffsetRateWeightService::getSampleErrors)
-                .description("Failed background end-offset samples; persistent failures degrade weights"
-                        + " toward the default")
+                .description("Background end-offset samples in which at least one partition failed;"
+                        + " persistent failures degrade weights toward the default")
                 .tags(tags)
                 .register(registry);
         Gauge.builder("consumer.balancer.offset.rate.tracked.partitions", offsetRateWeightService,

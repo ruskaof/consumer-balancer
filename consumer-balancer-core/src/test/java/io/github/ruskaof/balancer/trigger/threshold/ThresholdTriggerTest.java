@@ -166,13 +166,39 @@ class ThresholdTriggerTest {
 
     @Test
     void sanitizesWeightsBeforeComparingLoads() {
-        stubImbalancedGroup();
-        // NaN and a missing entry must fall back to the default weight instead of
+        stubGroup(
+                member("m1", "i1", T0, T1, T2),
+                member("m2", "i2"));
+        // NaN (T0) and a missing entry (T1) must fall back to the default weight instead of
         // poisoning the load sums.
-        weigh(T0, Double.NaN);
+        weigh(T0, Double.NaN, T2, 1.0);
 
         assertTrue(eagerTrigger().shouldTrigger(),
-                "with both partitions defaulted to 1.0, i1 carries 2 while the optimum is 1");
+                "with T0 and T1 defaulted to 1.0, i1 carries 3 while the optimum is 2");
+    }
+
+    @Test
+    void doesNotJudgeAGroupWithoutAnyUsableWeight() {
+        // A freshly elected coordinator's weight store has no history for the group yet:
+        // every weight defaults, and the loads would merely count partitions.
+        stubImbalancedGroup();
+        weights.clear();
+
+        assertFalse(eagerTrigger().shouldTrigger(), "i1 carries 2 partitions to i2's none");
+    }
+
+    @Test
+    void aCheckWithoutUsableWeightsNeitherCountsTowardsNorResetsTheStreak() {
+        stubImbalancedGroup();
+        ThresholdTrigger trigger = trigger(new RebalanceDamping(2, Duration.ZERO, Duration.ZERO));
+
+        weighImbalanced();
+        assertFalse(trigger.shouldTrigger(), "1 of 2 checks");
+        weights.clear();
+        assertFalse(trigger.shouldTrigger(), "skipped");
+        weighImbalanced();
+
+        assertTrue(trigger.shouldTrigger(), "2 of 2 checks");
     }
 
     @Test

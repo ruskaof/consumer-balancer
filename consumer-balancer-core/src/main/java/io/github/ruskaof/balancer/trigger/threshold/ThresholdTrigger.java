@@ -38,7 +38,9 @@ import java.util.concurrent.TimeUnit;
  *       as eligible for every topic in the group. That matches the instance-level load this
  *       trigger compares as long as every instance runs the whole set of listeners;</li>
  *   <li>weights are measured locally, while the assignment was computed from the group
- *       leader's own — equally valid but not identical — measurements.</li>
+ *       leader's own — equally valid but not identical — measurements. A check for which the
+ *       local store has no usable weight at all — typically the first one after this instance
+ *       was elected — is skipped rather than judged on partition counts.</li>
  * </ul>
  *
  * <p>Each of those can make the computed optimum unreachable, and because the assignor is
@@ -61,6 +63,8 @@ import java.util.concurrent.TimeUnit;
 public class ThresholdTrigger implements RebalanceTrigger {
 
     private static final long DESCRIBE_TIMEOUT_MS = 30_000L;
+    // One check without weights is the norm right after an election; three in a row are not.
+    private static final int WEIGHTS_UNKNOWN_WARN_AFTER_CHECKS = 3;
 
     private static final String LIKELY_CAUSES = "Likely causes: instances running different sets of listeners, or an"
             + " imbalance the assignor cannot improve on with its own weight measurements.";
@@ -83,6 +87,7 @@ public class ThresholdTrigger implements RebalanceTrigger {
     private Instant lastFiredAt;
     private boolean warnedAboutMissingGroupState;
     private boolean warnedAboutUnknownInstances;
+    private int checksWithoutWeights;
     private double lastRatio = Double.NaN;
     private double lastCurrentMaxLoad = Double.NaN;
     private double lastOptimalMaxLoad = Double.NaN;
@@ -125,15 +130,28 @@ public class ThresholdTrigger implements RebalanceTrigger {
         try {
             outcome = evaluate();
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Interrupted while running ThresholdTrigger", e);
-            outcome = EvaluationOutcome.ERROR;
+            return cancelled(e);
         } catch (Exception e) {
+            if (Thread.currentThread().isInterrupted()) {
+                // The interrupt surfaced wrapped, e.g. from inside the weight store.
+                return cancelled(e);
+            }
             log.error("Could not run ThresholdTrigger", e);
             outcome = EvaluationOutcome.ERROR;
         }
         recordEvaluation(outcome, System.nanoTime() - started);
         return outcome == EvaluationOutcome.FIRED;
+    }
+
+    /**
+     * The coordinator interrupts a running check when this instance loses the coordinator role
+     * or shuts down. That is a cancellation, not a failure: the check judged nothing, so nothing
+     * is recorded — reporting it as an error would raise an alert on every coordinator hand-over.
+     */
+    private boolean cancelled(Exception cause) {
+        Thread.currentThread().interrupt();
+        log.debug("ThresholdTrigger [group={}]: check cancelled by an interrupt", groupId, cause);
+        return false;
     }
 
     private EvaluationOutcome evaluate() throws Exception {
@@ -174,6 +192,13 @@ public class ThresholdTrigger implements RebalanceTrigger {
         lastInstanceCount = Set.copyOf(instanceIdByMember.values()).size();
         lastPartitionCount = allPartitions.size();
         lastDefaultedWeightCount = sanitized.defaultedCount();
+
+        if (!allPartitions.isEmpty() && sanitized.defaultedCount() == allPartitions.size()) {
+            return weightsUnknown();
+        }
+        if (checksWithoutWeights > 0) {
+            weightsKnownAgain();
+        }
 
         // The admin API does not expose member subscriptions, so every member is
         // treated as eligible for every topic in the group.
@@ -225,6 +250,35 @@ public class ThresholdTrigger implements RebalanceTrigger {
         }
 
         return onViolated(currentAssignment, currentMaxLoaded, optimalMaxLoaded, ratio);
+    }
+
+    /**
+     * Not one partition has a usable weight, so every load would merely count partitions —
+     * judging that could fire a rebalance on no information at all. It is what the first check
+     * of a freshly elected coordinator sees: its weight store has had no reason to measure this
+     * group before. That check already asked the store, so the next one normally has weights;
+     * like a check of a rebalancing group, this one leaves the hysteresis and cooldown untouched.
+     */
+    private EvaluationOutcome weightsUnknown() {
+        checksWithoutWeights++;
+        if (checksWithoutWeights == WEIGHTS_UNKNOWN_WARN_AFTER_CHECKS) {
+            log.warn("ThresholdTrigger [group={}]: the weight store has returned no usable weight for any of the"
+                            + " group's {} partitions on {} checks in a row, so the group is not checked for"
+                            + " imbalance. Check the weight store (e.g. the Prometheus weight query).",
+                    groupId, lastPartitionCount, checksWithoutWeights);
+        } else {
+            log.debug("ThresholdTrigger skipped [group={}]: no usable weight for any of the {} partitions",
+                    groupId, lastPartitionCount);
+        }
+        return EvaluationOutcome.WEIGHTS_UNKNOWN;
+    }
+
+    private void weightsKnownAgain() {
+        if (checksWithoutWeights >= WEIGHTS_UNKNOWN_WARN_AFTER_CHECKS) {
+            log.info("ThresholdTrigger [group={}]: the weight store returns weights again; resuming imbalance checks",
+                    groupId);
+        }
+        checksWithoutWeights = 0;
     }
 
     /** The state of this trigger after its most recent evaluation; safe to read from any thread. */
@@ -480,9 +534,19 @@ public class ThresholdTrigger implements RebalanceTrigger {
          * grouped into instances and was not judged.
          */
         INSTANCES_UNKNOWN,
+        /**
+         * No partition had a usable weight, so the loads would only have counted partitions;
+         * the group was not judged. Normal for the first check of a freshly elected
+         * coordinator, whose weight store has no history for the group yet.
+         */
+        WEIGHTS_UNKNOWN,
         /** The group had no members, or none with assigned partitions. */
         NO_MEMBERS,
-        /** The evaluation threw; the exception was logged and swallowed. */
+        /**
+         * The evaluation threw; the exception was logged and swallowed. A check cancelled by an
+         * interrupt — the coordinator role moved, or the application is shutting down — is not
+         * an error and is not recorded at all.
+         */
         ERROR
     }
 
