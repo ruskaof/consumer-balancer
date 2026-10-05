@@ -1,7 +1,9 @@
 package io.github.ruskaof.balancer.trigger;
 
+import io.github.ruskaof.balancer.MemberIdTracker;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.*;
+import org.apache.kafka.common.GroupState;
 
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -18,6 +20,7 @@ public class CoordinatorElection implements AutoCloseable {
 
     private final String groupId;
     private final Supplier<Set<String>> memberIdsSupplier;
+    private final MemberIdTracker memberIdTracker;
     private final AdminClient adminClient;
     private final boolean closeAdminClientOnShutdown;
     private final long electionIntervalMs;
@@ -25,10 +28,12 @@ public class CoordinatorElection implements AutoCloseable {
     private final CopyOnWriteArrayList<CoordinatorStatusListener> listeners = new CopyOnWriteArrayList<>();
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(true);
+    private volatile boolean groupStable;
 
     private CoordinatorElection(Builder builder) {
         this.groupId = builder.groupId;
         this.memberIdsSupplier = builder.memberIdsSupplier;
+        this.memberIdTracker = builder.memberIdTracker;
         this.electionIntervalMs = builder.electionIntervalMs;
         if (builder.adminClient != null) {
             this.adminClient = builder.adminClient;
@@ -50,7 +55,7 @@ public class CoordinatorElection implements AutoCloseable {
         }
     }
 
-    private void runElection() {
+    private synchronized void runElection() {
         if (!running.get())
             return;
 
@@ -59,43 +64,52 @@ public class CoordinatorElection implements AutoCloseable {
                     .describeConsumerGroups(Collections.singletonList(groupId));
             ConsumerGroupDescription desc = result.describedGroups().get(groupId)
                     .get(DESCRIBE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-
-            List<String> sortedMembers = desc.members().stream()
-                    .map(MemberDescription::consumerId)
-                    .sorted()
-                    .toList();
-
-            if (sortedMembers.isEmpty()) {
-                if (isCoordinator.getAndSet(false)) {
-                    log.info("No members in group '{}' - resigned coordinator", groupId);
-                    notifyListeners(false);
-                }
-                return;
-            }
+            groupStable = desc.groupState() == GroupState.STABLE;
+            if (groupStable) memberIdTracker.reconcileMembership(groupId, desc.members());
 
             Set<String> currentMemberIds = memberIdsSupplier.get();
-
-            boolean newStatus = currentMemberIds.stream()
-                    .anyMatch((memberId) -> memberId.equals(sortedMembers.getFirst()));
-            log.debug("Current memberIds: {}, sortedMemberIds:{}, election result: {}", currentMemberIds, sortedMembers,
-                    newStatus);
-
-            if (isCoordinator.getAndSet(newStatus) != newStatus) {
-                log.info("Coordinator status changed [group={}]: isCoordinator={} (memberIds={}, smallest={})",
-                        groupId, newStatus, currentMemberIds,
-                        sortedMembers.isEmpty() ? "N/A" : sortedMembers.getFirst());
-                notifyListeners(newStatus);
-            }
+            String selected = memberIdTracker.coordinatorMemberId(groupId, desc.members());
+            updateStatus(desc.groupState() == GroupState.STABLE
+                    && selected != null && currentMemberIds.contains(selected));
         } catch (InterruptedException e) {
+            groupStable = false;
+            updateStatus(false);
             Thread.currentThread().interrupt();
             log.warn("Interrupted during election for group '{}'", groupId);
         } catch (Exception e) {
+            groupStable = false;
+            updateStatus(false);
             log.warn("Election failed for group '{}'", groupId, e);
         }
     }
 
+    private void updateStatus(boolean newStatus) {
+        if (isCoordinator.getAndSet(newStatus) != newStatus) {
+            log.info("Coordinator status changed [group={}]: isCoordinator={}", groupId, newStatus);
+            notifyListeners(newStatus);
+        }
+    }
+
+    /** Revalidate ownership after an expensive trigger evaluation and before requesting a rebalance. */
+    public synchronized boolean confirmCoordinator() {
+        if (!running.get()) return false;
+        runElection();
+        return running.get() && isCoordinator.get();
+    }
+
+    /** Recovery may run on a follower, but must not repeatedly interrupt a rebalance. */
+    public synchronized boolean confirmStableGroup() {
+        if (!running.get()) return false;
+        runElection();
+        return running.get() && groupStable;
+    }
+
     public String getGroupId() {
         return groupId;
+    }
+
+    MemberIdTracker memberIdTracker() {
+        return memberIdTracker;
     }
 
     /** Current coordinator status (thread-safe) */
@@ -143,6 +157,7 @@ public class CoordinatorElection implements AutoCloseable {
     public static class Builder {
         private String groupId;
         private Supplier<Set<String>> memberIdsSupplier;
+        private MemberIdTracker memberIdTracker;
         private long electionIntervalMs = 30_000;
         private Properties adminProps = new Properties();
         /**
@@ -155,9 +170,10 @@ public class CoordinatorElection implements AutoCloseable {
             if (groupId == null || groupId.isBlank()) {
                 throw new IllegalArgumentException("Group id is required");
             }
-            if (Objects.isNull(memberIdsSupplier)) {
-                throw new IllegalArgumentException("Member id supplier is required");
+            if (memberIdTracker == null) {
+                throw new IllegalArgumentException("The assignor's MemberIdTracker is required for monitor election");
             }
+            if (memberIdsSupplier == null) memberIdsSupplier = () -> memberIdTracker.getCurrentMemberIds(groupId);
             if (adminClient == null && !adminProps.containsKey(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG)) {
                 throw new IllegalArgumentException("Bootstrap servers are required when admin client is not provided");
             }
@@ -172,6 +188,12 @@ public class CoordinatorElection implements AutoCloseable {
 
         public Builder setMemberIdsSupplier(Supplier<Set<String>> memberIdsSupplier) {
             this.memberIdsSupplier = memberIdsSupplier;
+            return this;
+        }
+
+        /** Follow the monitor designated by the assignor's topology snapshot. */
+        public Builder setMemberIdTracker(MemberIdTracker memberIdTracker) {
+            this.memberIdTracker = Objects.requireNonNull(memberIdTracker, "memberIdTracker");
             return this;
         }
 

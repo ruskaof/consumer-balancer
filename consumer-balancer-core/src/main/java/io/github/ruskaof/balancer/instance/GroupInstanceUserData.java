@@ -10,8 +10,9 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Wire codec for the assignment userData the group leader sends back to every member: the
- * instance id each member of the group reported through its subscription userData.
+ * Legacy assignment codec retained to recognize cached assignments during a coordinated
+ * upgrade. New assignments use {@link MonitoringProtocol} and send the topology only once.
+ * This legacy format sent the instance mapping back to every member.
  *
  * <p>It exists because the Kafka admin API exposes no subscription userData — so the
  * {@link io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger}, which watches the

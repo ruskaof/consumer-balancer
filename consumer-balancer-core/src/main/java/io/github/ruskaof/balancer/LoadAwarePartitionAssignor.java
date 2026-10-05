@@ -3,9 +3,9 @@ package io.github.ruskaof.balancer;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
-import io.github.ruskaof.balancer.instance.GroupInstanceUserData;
 import io.github.ruskaof.balancer.instance.InstanceIdResolver;
 import io.github.ruskaof.balancer.instance.InstanceUserData;
+import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import io.github.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
 import io.github.ruskaof.balancer.prometheus.PrometheusConnectionSettings;
@@ -34,10 +34,9 @@ import java.util.*;
  * evening traffic across application instances (pods/JVMs) first and across the members of
  * each instance second. Every member reports its instance id — configured or auto-resolved
  * by {@link InstanceIdResolver} — to the group leader through subscription userData, so the
- * leader can group co-located members. The leader sends the resulting
- * {@code memberId -> instanceId} mapping back to every member in the assignment userData
- * ({@link GroupInstanceUserData}), where the configured {@link MemberIdTracker} keeps it for
- * the proactive trigger.
+ * leader can group co-located members. The leader sends the complete topology only to the
+ * designated monitoring consumer; other members receive a small acknowledgement of their
+ * own subscription. This keeps monitoring metadata proportional to group size.
  *
  * <p>Collaborators are taken from the consumer configs (see {@link LoadAwareAssignorConfig}):
  * {@code assignor.load-aware.weight-service}, {@code assignor.load-aware.balance-service} and
@@ -57,6 +56,8 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
     private BalanceService balanceService = null;
     private MemberIdTracker memberIdTracker = null;
     private String instanceId = null;
+    private String groupId = null;
+    private Set<String> subscribedTopics = Set.of();
     private String lastReportedMemberId = null;
     private final RoundRobinAssignor fallbackAssignor = new RoundRobinAssignor();
 
@@ -87,17 +88,16 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
      */
     @Override
     public ByteBuffer subscriptionUserData(Set<String> topics) {
-        return instanceId == null ? null : InstanceUserData.encode(instanceId);
+        subscribedTopics = Set.copyOf(topics);
+        return instanceId == null ? null : MonitoringProtocol.subscription(instanceId,
+                memberIdTracker != null, memberIdTracker == null ? 0 : memberIdTracker.rebalanceRevision(groupId));
     }
 
     /**
-     * Hands the group's {@code memberId -> instanceId} mapping back to every member in the
-     * assignment userData. Only the leader ever gets here, and only the leader ever sees
-     * all the subscriptions carrying those ids — but the proactive
-     * {@link io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger} runs on
-     * whichever member wins the coordinator election, and the Kafka admin API it works from
-     * exposes no subscription userData. Sending the mapping to everyone is what lets the
-     * elected member group the group the same way the leader did.
+     * Sends the group topology once, to the designated monitor. Static member identities
+     * retain monitor ownership when Kafka replays an assignment after a process restart.
+     * Every member also receives its expected instance id and subscriptions, so a replay
+     * that no longer describes the current process can request a fresh assignment.
      *
      * <p>Wrapping the outer assign covers the round-robin fallback too: the mapping comes
      * from the subscriptions, not from the assignment. Any failure here leaves the computed
@@ -107,41 +107,61 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
     public GroupAssignment assign(Cluster metadata, GroupSubscription groupSubscription) {
         GroupAssignment assignment = super.assign(metadata, groupSubscription);
         try {
-            return withInstanceIds(assignment, groupSubscription.groupSubscription());
+            return withMonitoringTopology(assignment, groupSubscription.groupSubscription());
         } catch (RuntimeException e) {
-            log.warn("Could not attach the group's instance ids to the assignment; the proactive trigger will"
+            log.warn("Could not attach the group's monitoring topology to the assignment; the proactive trigger will"
                     + " skip its checks until a later assignment carries them (the assignment itself is"
                     + " unaffected)", e);
             return assignment;
         }
     }
 
-    private static GroupAssignment withInstanceIds(
+    private static GroupAssignment withMonitoringTopology(
             GroupAssignment assignment,
             Map<String, Subscription> subscriptions) {
 
         Map<String, String> instanceIdByMember = instanceIdByMember(subscriptions);
-        if (instanceIdByMember.isEmpty()) {
+        Map<String, MonitoringProtocol.Member> members = new TreeMap<>();
+        Map<String, MonitoringProtocol.Subscription> reported = new HashMap<>();
+        String ownerIdentity = null;
+        for (var entry : subscriptions.entrySet()) {
+            String identity = MonitoringProtocol.identity(entry.getKey(), entry.getValue().groupInstanceId());
+            if (members.put(identity, new MonitoringProtocol.Member(instanceIdByMember.get(entry.getKey()),
+                    Set.copyOf(entry.getValue().topics()))) != null) {
+                throw new IllegalArgumentException("Duplicate monitoring identity: " + identity);
+            }
+            var report = MonitoringProtocol.readSubscription(entry.getValue().userData());
+            reported.put(entry.getKey(), report);
+            if (report != null && report.monitoring()
+                    && (ownerIdentity == null || identity.compareTo(ownerIdentity) < 0)) {
+                ownerIdentity = identity;
+            }
+        }
+        if (ownerIdentity == null) {
+            log.debug("No member of this group advertises proactive monitoring support");
             return assignment;
         }
-        ByteBuffer encoded = GroupInstanceUserData.encode(instanceIdByMember);
 
-        // The leader sends the same payload to every member, so the group metadata record
-        // Kafka persists carries it once per member.
-        long totalBytes = (long) assignment.groupAssignment().size() * encoded.remaining();
-        if (totalBytes > GroupInstanceUserData.MAX_TOTAL_BYTES) {
-            log.warn("The instance ids of this {}-member group would add {} bytes to the group metadata, over the"
-                            + " {} byte budget, so they are not sent; the proactive trigger cannot check a group"
-                            + " this large and will skip its checks",
-                    instanceIdByMember.size(), totalBytes, GroupInstanceUserData.MAX_TOTAL_BYTES);
-            return assignment;
-        }
-
+        UUID snapshotId = UUID.randomUUID();
         Map<String, Assignment> withUserData = new HashMap<>();
-        assignment.groupAssignment().forEach((memberId, memberAssignment) ->
-                // Each member gets its own view of the buffer: the protocol serializer
-                // consumes the one it is handed.
-                withUserData.put(memberId, new Assignment(memberAssignment.partitions(), encoded.duplicate())));
+        long totalBytes = 0;
+        for (var entry : assignment.groupAssignment().entrySet()) {
+            String memberId = entry.getKey();
+            Subscription subscription = subscriptions.get(memberId);
+            String identity = MonitoringProtocol.identity(memberId, subscription.groupInstanceId());
+            var report = reported.get(memberId);
+            ByteBuffer encoded = MonitoringProtocol.assignment(new MonitoringProtocol.Assignment(snapshotId,
+                    ownerIdentity, instanceIdByMember.get(memberId), Set.copyOf(subscription.topics()),
+                    report == null ? 0 : report.revision(), identity.equals(ownerIdentity) ? members : Map.of()));
+            totalBytes += encoded.remaining();
+            if (totalBytes > MonitoringProtocol.MAX_TOTAL_BYTES) {
+                log.warn("Monitoring topology for this {}-member group exceeds the {} byte metadata budget;"
+                                + " proactive checks are unavailable until a topology fits the budget",
+                        subscriptions.size(), MonitoringProtocol.MAX_TOTAL_BYTES);
+                return assignment;
+            }
+            withUserData.put(memberId, new Assignment(entry.getValue().partitions(), encoded));
+        }
         return new GroupAssignment(withUserData);
     }
 
@@ -278,6 +298,7 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
         this.instanceId = InstanceIdResolver.resolve(LoadAwareAssignorConfig.stringConfig(
                 configs, LoadAwareAssignorConfig.INSTANCE_ID, null));
+        this.groupId = LoadAwareAssignorConfig.stringConfig(configs, "group.id", null);
     }
 
     /**
@@ -295,29 +316,10 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         if (memberId == null || memberId.isBlank()) {
             return;
         }
-        memberIdTracker.updateMemberId(metadata.groupId(), lastReportedMemberId, memberId);
+        memberIdTracker.onAssignment(metadata.groupId(), metadata.generationId(), lastReportedMemberId, memberId,
+                MonitoringProtocol.identity(memberId, metadata.groupInstanceId()), instanceId, subscribedTopics,
+                assignment == null ? null : assignment.userData());
         lastReportedMemberId = memberId;
-        recordInstanceIds(assignment, metadata);
-    }
-
-    /**
-     * An assignment without a readable mapping — from a leader running a version that does
-     * not send one — leaves the last known mapping in place rather than blanking it: the
-     * trigger checks that its mapping covers every live member anyway, so a stale one makes
-     * it skip, exactly as an empty one would.
-     */
-    private void recordInstanceIds(Assignment assignment, ConsumerGroupMetadata metadata) {
-        if (assignment == null) {
-            return;
-        }
-        GroupInstanceUserData.Decoded decoded = GroupInstanceUserData.decode(assignment.userData());
-        if (decoded.ok()) {
-            memberIdTracker.recordInstanceIds(
-                    metadata.groupId(), metadata.generationId(), decoded.instanceIdByMember());
-        } else if (decoded.status() == GroupInstanceUserData.Status.CORRUPT) {
-            log.warn("The group leader sent unreadable instance-id userData with the assignment; the proactive"
-                    + " trigger will skip its checks until a later assignment carries a readable one");
-        }
     }
 
     private static WeightService createDefaultWeightService(Map<String, ?> configs) {
@@ -418,12 +420,10 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
          */
         public static final String BALANCE_SERVICE = "assignor.load-aware.balance-service";
         /**
-         * Optional {@link MemberIdTracker} that receives this consumer's member id, and the
-         * group's {@code memberId -> instanceId} mapping, after each rebalance. Value: an
-         * instance, a {@link Class}, or a class name. Pass the same instance to
-         * {@code CoordinatorElection} and {@code ThresholdTrigger} for proactive
-         * rebalancing — without it the trigger cannot group members into instances and
-         * skips every check.
+         * Optional {@link MemberIdTracker} that receives assignment acknowledgements and,
+         * on the monitor, the group's topology. Value: an instance, a {@link Class}, or a
+         * class name. Proactive monitoring requires one shared instance across this JVM's
+         * consumers, coordinator and trigger; {@code ConsumerGroupBalancers} wires it.
          */
         public static final String MEMBER_ID_TRACKER = "assignor.load-aware.member-id-tracker";
         /**

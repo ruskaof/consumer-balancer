@@ -24,19 +24,14 @@ import java.util.concurrent.TimeUnit;
  * Fires when the most loaded application instance carries more than {@code threshold} times
  * the load it would carry under the optimal assignment computed from current weights.
  *
- * <p>The trigger observes the group from the outside, through the admin API, and that view is
- * necessarily an approximation of what the assignor sees:
+ * <p>The trigger observes assignments through the admin API, combining that view with the
+ * topology delivered by the assignor to the designated monitor:
  * <ul>
- *   <li>the admin API exposes no instance ids, so members are grouped by the
- *       {@code memberId -> instanceId} mapping the group leader hands back with every
- *       assignment and {@link MemberIdTracker} keeps. A check whose mapping does not cover
- *       every member the admin API reports — during a rolling upgrade from a version that
- *       does not send one, say — is skipped rather than guessed at: treating an unmapped
+ *   <li>the admin API exposes no application instance ids or subscriptions, so those come
+ *       from the topology snapshot {@link MemberIdTracker} keeps. A check whose snapshot
+ *       does not cover every live member is skipped rather than guessed at: treating an unmapped
  *       member as its own instance would compare the group against an optimum the assignor
  *       would never produce, and ask for a rebalance on every single check;</li>
- *   <li>the admin API does not expose member subscriptions, so every member is treated
- *       as eligible for every topic in the group. That matches the instance-level load this
- *       trigger compares as long as every instance runs the whole set of listeners;</li>
  *   <li>weights are measured locally, while the assignment was computed from the group
  *       leader's own — equally valid but not identical — measurements. A check for which the
  *       local store has no usable weight at all — typically the first one after this instance
@@ -66,8 +61,8 @@ public class ThresholdTrigger implements RebalanceTrigger {
     // One check without weights is the norm right after an election; three in a row are not.
     private static final int WEIGHTS_UNKNOWN_WARN_AFTER_CHECKS = 3;
 
-    private static final String LIKELY_CAUSES = "Likely causes: instances running different sets of listeners, or an"
-            + " imbalance the assignor cannot improve on with its own weight measurements.";
+    private static final String LIKELY_CAUSES = "Likely causes: changing load or an imbalance the assignor cannot"
+            + " improve on with its own weight measurements.";
 
     private final AdminClient adminClient;
     private final String groupId;
@@ -170,10 +165,12 @@ public class ThresholdTrigger implements RebalanceTrigger {
             return EvaluationOutcome.NO_MEMBERS;
         }
 
-        var instanceIdByMember = instanceIdsOf(groupDescription);
-        if (instanceIdByMember == null) {
+        var members = membersOf(groupDescription);
+        if (members == null) {
             return EvaluationOutcome.INSTANCES_UNKNOWN;
         }
+        Map<String, String> instanceIdByMember = new HashMap<>();
+        members.forEach(member -> instanceIdByMember.put(member.memberId(), member.instanceId()));
 
         var allPartitions = new HashSet<TopicPartition>();
         var currentAssignment = new HashMap<String, List<TopicPartition>>();
@@ -199,16 +196,6 @@ public class ThresholdTrigger implements RebalanceTrigger {
         if (checksWithoutWeights > 0) {
             weightsKnownAgain();
         }
-
-        // The admin API does not expose member subscriptions, so every member is
-        // treated as eligible for every topic in the group.
-        Set<String> allTopics = new HashSet<>();
-        for (TopicPartition tp : allPartitions) {
-            allTopics.add(tp.topic());
-        }
-        var members = new ArrayList<GroupMember>();
-        instanceIdByMember.forEach((memberId, instanceId) ->
-                members.add(new GroupMember(memberId, instanceId, allTopics)));
 
         var optimalAssignment = balanceService.computeOptimalAssignment(members, weights);
 
@@ -426,9 +413,8 @@ public class ThresholdTrigger implements RebalanceTrigger {
     }
 
     /**
-     * The instance every member of the described group runs in, from the mapping the group
-     * leader last sent with an assignment, or {@code null} when the mapping does not cover
-     * all of them.
+     * Every member's application instance and actual subscriptions from the topology the
+     * group leader sent, or {@code null} when that topology is absent or no longer current.
      *
      * <p>All-or-nothing on purpose. The alternative — counting an unmapped member as its own
      * instance — silently changes what the comparison means: the optimum would then spread
@@ -436,41 +422,24 @@ public class ThresholdTrigger implements RebalanceTrigger {
      * would ever produce, so the ratio would sit above the threshold permanently and ask for
      * a rebalance that cannot help on every check.
      */
-    private Map<String, String> instanceIdsOf(ConsumerGroupDescription groupDescription) {
-        Map<String, String> known = memberIdTracker.getInstanceIds(groupId);
-        Map<String, String> instanceIdByMember = new HashMap<>();
-        List<String> unmapped = new ArrayList<>();
-
-        for (var memberDescription : groupDescription.members()) {
-            String instanceId = known.get(memberDescription.consumerId());
-            if (instanceId == null) {
-                unmapped.add(memberDescription.consumerId());
-            } else {
-                instanceIdByMember.put(memberDescription.consumerId(), instanceId);
-            }
-        }
-
-        if (!unmapped.isEmpty()) {
-            // Permanent until a leader running a version that sends the mapping assigns, so
-            // say it once — an operator seeing a silent trigger needs to know why.
+    private List<GroupMember> membersOf(ConsumerGroupDescription groupDescription) {
+        List<GroupMember> members = memberIdTracker.resolveMembers(groupId, groupDescription.members());
+        if (members == null) {
             if (!warnedAboutUnknownInstances) {
                 warnedAboutUnknownInstances = true;
-                log.warn("ThresholdTrigger [group={}]: no instance id is known for members {}, so the group cannot"
-                                + " be grouped into instances and is not checked for imbalance. Expected while"
-                                + " rolling out a version that reports instance ids with the assignment; if it"
-                                + " persists, the group leader is on an older version or the group is too large"
-                                + " for the mapping to be sent.",
-                        groupId, unmapped);
+                log.warn("ThresholdTrigger [group={}]: no current monitoring topology covers the live group;"
+                                + " imbalance checks wait for a fresh assignment. If this persists, check the"
+                                + " assignor's metadata-budget and protocol warnings.", groupId);
             }
             return null;
         }
 
         if (warnedAboutUnknownInstances) {
             warnedAboutUnknownInstances = false;
-            log.info("ThresholdTrigger [group={}]: instance ids are known for every member again; resuming"
+            log.info("ThresholdTrigger [group={}]: the monitoring topology is current again; resuming"
                     + " imbalance checks", groupId);
         }
-        return instanceIdByMember;
+        return members;
     }
 
     private static Map<String, List<TopicPartition>> groupByInstance(

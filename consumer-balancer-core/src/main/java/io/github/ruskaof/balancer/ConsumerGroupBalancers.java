@@ -270,6 +270,7 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
         CoordinatorElection election = new CoordinatorElection.Builder()
                 .setGroupId(groupId)
                 .setMemberIdsSupplier(() -> memberIdTracker.getCurrentMemberIds(groupId))
+                .setMemberIdTracker(memberIdTracker)
                 .setElectionIntervalMs(spec.electionInterval.toMillis())
                 .setAdminClient(adminClient)
                 .build();

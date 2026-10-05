@@ -1,15 +1,22 @@
 package io.github.ruskaof.balancer.trigger.threshold;
 
 import io.github.ruskaof.balancer.MemberIdTracker;
+import io.github.ruskaof.balancer.LoadAwarePartitionAssignor;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
+import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import io.github.ruskaof.balancer.trigger.RebalanceDamping;
+import io.github.ruskaof.balancer.weight.WeightService;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ConsumerGroupDescription;
 import org.apache.kafka.clients.admin.DescribeConsumerGroupsResult;
 import org.apache.kafka.clients.admin.MemberAssignment;
 import org.apache.kafka.clients.admin.MemberDescription;
+import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor;
+import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.GroupState;
 import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.Node;
+import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.internals.KafkaFutureImpl;
 import org.junit.jupiter.api.Test;
@@ -18,10 +25,13 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -101,6 +111,68 @@ class ThresholdTriggerTest {
         weigh(T0, 10.0, T1, 10.0);
 
         assertFalse(eagerTrigger().shouldTrigger());
+    }
+
+    @Test
+    void usesActualSubscriptionsRatherThanAnUnreachableCrossTopicOptimum() {
+        TopicPartition other = new TopicPartition("other", 0);
+        stubGroup(member("m1", "i1", T0, T1), member("m2", "i2", other));
+        weigh(T0, 10.0, T1, 10.0);
+        weights.put(other, 1.0);
+        var topology = new MonitoringProtocol.Assignment(UUID.randomUUID(), "m:m1", "i1", Set.of("t"), 0,
+                Map.of("m:m1", new MonitoringProtocol.Member("i1", Set.of("t")),
+                        "m:m2", new MonitoringProtocol.Member("i2", Set.of("other"))));
+        memberIdTracker.onAssignment(GROUP, ++generation, null, "m1", "m:m1", "i1", Set.of("t"),
+                MonitoringProtocol.assignment(topology));
+
+        ThresholdTrigger trigger = eagerTrigger();
+        assertFalse(trigger.shouldTrigger(), "moving t partitions to m2 is impossible under its subscription");
+        assertEquals(1.0, trigger.status().lastRatio());
+        assertEquals(1, trigger.status().evaluations(ThresholdTrigger.EvaluationOutcome.BALANCED));
+    }
+
+    @Test
+    void fiveHundredStaticMembersAcrossOneHundredInstancesCanTriggerFromTheAssignorsTopology() {
+        final int count = 500;
+        Map<String, ConsumerPartitionAssignor.Subscription> subscriptions = new HashMap<>();
+        List<MemberDescription> live = new ArrayList<>();
+        List<PartitionInfo> partitionMetadata = new ArrayList<>();
+        Set<TopicPartition> allPartitions = new java.util.HashSet<>();
+        Node broker = new Node(0, "localhost", 9092);
+        for (int i = 0; i < count; i++) {
+            TopicPartition partition = new TopicPartition("t", i);
+            allPartitions.add(partition);
+            weights.put(partition, 1.0);
+            partitionMetadata.add(new PartitionInfo("t", i, broker, new Node[]{broker}, new Node[]{broker}));
+            String memberId = String.format("member-%04d", i);
+            String staticId = String.format("consumer-%04d", i);
+            var subscription = new ConsumerPartitionAssignor.Subscription(List.of("t"),
+                    MonitoringProtocol.subscription(String.format("instance-%04d", i / 5), true, 0));
+            subscription.setGroupInstanceId(Optional.of(staticId));
+            subscriptions.put(memberId, subscription);
+        }
+        for (int i = 0; i < count; i++) {
+            live.add(new MemberDescription(String.format("member-%04d", i),
+                    Optional.of(String.format("consumer-%04d", i)), "client", "host",
+                    new MemberAssignment(i == 0 ? allPartitions : Set.of())));
+        }
+        stubGroup(live.toArray(MemberDescription[]::new));
+        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
+        assignor.configure(Map.of(LoadAwarePartitionAssignor.LoadAwareAssignorConfig.WEIGHT_SERVICE,
+                (WeightService) partitions -> weights));
+        var assignment = assignor.assign(new Cluster("c", List.of(broker), partitionMetadata, Set.of(), Set.of()),
+                new ConsumerPartitionAssignor.GroupSubscription(subscriptions));
+        var delivered = assignment.groupAssignment().get("member-0000").userData();
+        assertNotNull(delivered, "the required scale must not disable proactive monitoring");
+        memberIdTracker.onAssignment(GROUP, ++generation, null, "member-0000", "s:consumer-0000",
+                "instance-0000", Set.of("t"), delivered);
+
+        ThresholdTrigger trigger = eagerTrigger();
+        assertTrue(trigger.shouldTrigger());
+        assertEquals(500, trigger.status().lastMemberCount());
+        assertEquals(100, trigger.status().lastInstanceCount());
+        assertEquals(500, trigger.status().lastPartitionCount());
+        assertEquals(100.0, trigger.status().lastRatio());
     }
 
     @Test

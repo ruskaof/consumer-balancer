@@ -11,11 +11,19 @@ public interface RebalanceTrigger {
 }
 ```
 
-The elected coordinator (`CoordinatorManager`) calls `shouldTrigger()` on a fixed
+The designated coordinator (`CoordinatorManager`) calls `shouldTrigger()` on a fixed
 schedule (`consumer-balancer.coordinator.trigger-check-interval`, default 30s).
-When it returns `true`, the coordinator forces a group rebalance, which re-runs
+When it returns `true`, the manager revalidates ownership, advances the request
+revision in subscription metadata, and requests a group rebalance, which re-runs
 `LoadAwarePartitionAssignor` and redistributes partitions according to the latest
-per-partition weights.
+per-partition weights. Changing the revision ensures that a request made by a
+nonleader consumer is visible to Kafka as a subscription change.
+
+`ConsumerGroupBalancers` wires the assignor, election, trigger and manager to one
+shared `MemberIdTracker`; this is the recommended API for proactive monitoring.
+For manual core wiring, follow the [configuration instructions](../../README.md#assignor-configuration-consumer-configs),
+including the election's required `setMemberIdTracker`. The manager obtains the
+same tracker from that election automatically.
 
 This is **proactive** rebalancing: Kafka already rebalances *reactively* on
 membership changes, but it never re-balances on its own just because the load
@@ -31,23 +39,27 @@ Describes the consumer group, pulls per-partition weights from the configured
 weight store (by default, end-offset rates measured through the Kafka
 AdminClient), computes the *optimal* assignment via the `BalanceService`, and
 compares the **current** most-loaded application instance against the
-**optimal** most-loaded instance. Members are grouped into instances by the
-`memberId → instanceId` mapping the group leader hands back with every assignment
-and each JVM keeps in its `MemberIdTracker` — the AdminClient cannot see the
-instance ids members report to the assignor, so the mapping is what carries them
-to the coordinator. A check whose mapping does not cover every member the
-AdminClient reports is skipped rather than guessed at. The imbalance is:
+**optimal** most-loaded instance. Instance grouping and actual topic subscriptions
+come from a topology snapshot sent **only to the monitoring consumer**. Other
+consumers receive small acknowledgements of their own metadata. The AdminClient
+supplies current assignments; `MemberIdTracker` resolves the snapshot's consumer
+identities against that live membership. An absent or stale topology pauses the
+check. Idle members retain their actual subscription eligibility. The imbalance is:
 
 ```
 currentMaxInstanceLoad / optimalMaxInstanceLoad > rebalanceLoadImbalanceThreshold   (default 1.1)
 ```
 
-Seeing that once is *not* enough to fire. The trigger judges the group from the
-outside, so its instance grouping, its assumption that every member is eligible
-for every topic, and its own weight measurements can all differ from what the
-group leader used — which means the optimum it computes may be unreachable. An
-unreachable optimum asks for the same useless rebalance on every check, so three
-guards (`RebalanceDamping`) bound the rebalance rate:
+The assignor chooses the smallest typed identity among consumers advertising
+monitoring support: `s:<group.instance.id>` for static consumers, or `m:<memberId>`
+for dynamic consumers. The full snapshot and all acknowledgements together have
+a **512 KiB** budget. Sending one snapshot removes the previous duplication per
+member; native Kafka metadata limits still apply. Exceeding this budget disables
+monitoring with a warning while partition assignment continues.
+
+Seeing an imbalance once is *not* enough to fire. The monitor measures weights
+at a different moment from the Kafka group leader, so they can disagree about
+the best assignment. Three guards (`RebalanceDamping`) bound the rebalance rate:
 
 - **stable groups only** — a check landing mid-rebalance is skipped, never acted
   on, because the AdminClient then reports partial or previous-generation
@@ -64,6 +76,20 @@ guards (`RebalanceDamping`) bound the rebalance rate:
   up to `consumer-balancer.rebalance-max-cooldown` (default `2h`), logging a
   warning that names the likely cause. Seeing the group balanced winds the
   cooldown back to its base.
+
+Static membership does not require an explicit application-instance id. Each JVM
+can keep using its automatically generated id. If Kafka replays an assignment
+after a restart, the consumer checks its acknowledged instance id and topics
+against the current process. A mismatch requests a fresh assignment, including
+from a nonmonitor JVM. Recovery coalesces local requests, uses backoff, and waits
+for a stable group; it can add a group rebalance after a static restart. A fresh,
+matching acknowledgement stops recovery. Missing or corrupt metadata and an
+exceeded size budget do not initiate repeated refreshes.
+
+The new metadata format requires a coordinated group upgrade. Mixed-version
+proactive operation is not guaranteed until the new assignor produces a fresh
+topology. Recognized legacy assignments cached by Kafka for static members are
+refreshed through the same recovery path. See [upgrade guidance](../../README.md#upgrading-monitoring-metadata).
 
 | Pros | Cons |
 | --- | --- |
