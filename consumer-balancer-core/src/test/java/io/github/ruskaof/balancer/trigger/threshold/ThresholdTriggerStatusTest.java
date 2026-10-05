@@ -1,6 +1,7 @@
 package io.github.ruskaof.balancer.trigger.threshold;
 
 import io.github.ruskaof.balancer.MemberIdTracker;
+import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
 import io.github.ruskaof.balancer.trigger.RebalanceDamping;
 import io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger.EvaluationOutcome;
@@ -23,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -343,8 +345,14 @@ class ThresholdTriggerStatusTest {
         DescribeConsumerGroupsResult result = mock(DescribeConsumerGroupsResult.class);
         when(result.describedGroups()).thenReturn(futures);
         when(adminClient.describeConsumerGroups(List.of(GROUP))).thenReturn(result);
-        // What the leader would have sent back with the assignment this group is now on.
-        memberIdTracker.recordInstanceIds(GROUP, ++generation, stubbedInstanceIds);
+        Map<String, MonitoringProtocol.Member> topology = new LinkedHashMap<>();
+        stubbedInstanceIds.forEach((id, instance) ->
+                topology.put("m:" + id, new MonitoringProtocol.Member(instance, Set.of("t"))));
+        String owner = stubbedInstanceIds.keySet().stream().findFirst().orElse("unavailable");
+        String instance = stubbedInstanceIds.getOrDefault(owner, "unavailable");
+        var payload = topology.isEmpty() ? null : MonitoringProtocol.assignment(new MonitoringProtocol.Assignment(
+                UUID.randomUUID(), "m:" + owner, instance, Set.of("t"), 0, topology));
+        memberIdTracker.onAssignment(GROUP, ++generation, null, owner, "m:" + owner, instance, Set.of("t"), payload);
         stubbedInstanceIds.clear();
     }
 

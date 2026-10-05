@@ -22,7 +22,7 @@ class InstanceIdResolverTest {
     @Test
     void rejectsOversizedConfiguredId() {
         assertThrows(IllegalArgumentException.class,
-                () -> InstanceIdResolver.resolve("x".repeat(InstanceUserData.MAX_INSTANCE_ID_BYTES + 1)));
+                () -> InstanceIdResolver.resolve("x".repeat(MonitoringProtocol.MAX_STRING_BYTES + 1)));
     }
 
     @Test

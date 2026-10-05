@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:9.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:10.0.0")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:9.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:10.0.0")
 }
 ```
 
@@ -118,21 +118,21 @@ The instance id resolves in this order:
 1. `consumer-balancer.instance-id` property (or the `assignor.load-aware.instance-id` consumer config) — set it when you want stable, human-readable instance labels (e.g. the pod name) in the leader's assignment logs;
 2. otherwise a **random id generated once per JVM** — every consumer in the JVM shares it, and distinct JVMs never collide, even on one machine.
 
-A member whose userData carries no readable instance id (e.g. an older library version during a rolling upgrade) is treated as its own single-member instance, so mixed-version groups keep working and converge once the rollout completes.
+Every member must report the current subscription format. Missing or unreadable metadata causes round-robin assignment and disables proactive monitoring for that assignment; instance grouping is never guessed. Version 10 introduces a breaking protocol change; see [Upgrading monitoring metadata](#upgrading-monitoring-metadata).
 
-The leader then sends the resulting `memberId → instanceId` mapping back to every member with the assignment, and each JVM keeps it. That is how the proactive `ThresholdTrigger` — which watches the group through the AdminClient, where instance ids are invisible — groups members into the same instances the assignor used. See [Proactive rebalance](#proactive-rebalance) for the rest of what it approximates and why it is deliberately slow to act.
+The leader sends a topology snapshot containing application-instance ids and actual topic subscriptions to **one monitoring consumer**. Every other consumer receives a small acknowledgement containing the monitor identity and its own expected instance id, topics and request revision. The monitor's `MemberIdTracker` combines that snapshot with the AdminClient's current assignments, so `ThresholdTrigger` uses the same instance grouping and subscription constraints as the assignor. The full topology is sent once, avoiding a copy for every consumer.
 
 ## Proactive rebalance
 
-One elected member (the coordinator) checks the group every `consumer-balancer.coordinator.trigger-check-interval` (default `30s`) and may force a rebalance. **Every proactive rebalance stops the whole group**, so the trigger is built to under-react rather than over-react.
+One designated member (the coordinator) checks the group every `consumer-balancer.coordinator.trigger-check-interval` (default `30s`) and may force a rebalance. The assignor selects the smallest typed identity among consumers advertising monitoring support: `s:<group.instance.id>` for static members, or `m:<memberId>` for dynamic members. Static identities preserve ownership when broker member ids change, and an idle consumer can still monitor. `CoordinatorElection` verifies that this designated consumer is live, belongs to this JVM, and has a current topology. **Every proactive rebalance stops the whole group**, so the trigger is built to under-react rather than over-react.
 
-It has to be, because it watches the group from the *outside*, through the AdminClient, and that view is only an approximation of what the assignor sees:
+The monitor validates its topology before judging the group:
 
-- **instances** — the AdminClient cannot read subscription userData, so it cannot see instance ids at all. The group leader therefore hands the whole `memberId → instanceId` mapping back to every member with the assignment, and each JVM keeps the latest one; the coordinator groups by that, so it splits the group into instances exactly as the assignor did — nothing here depends on client addresses, which several pods can share (host-network pods, NAT). A check whose mapping does not cover every member the AdminClient reports is **skipped**, not guessed at: that happens while rolling out from a version that does not send the mapping, and in a group large enough that the mapping exceeds its 512 KB budget across the group metadata record.
-- **subscriptions** — the AdminClient cannot see them either, so every member counts as eligible for every topic in the group. That matches the instance-level load being compared as long as every instance runs the whole set of listeners, which is the normal case for identical replicas.
+- **instances and subscriptions** — the AdminClient cannot read these from subscription userData. The snapshot supplies both, including subscriptions of idle members, and the trigger only considers placements allowed by those subscriptions. If the snapshot is unavailable, stale, or does not match the live membership, the check is **skipped**. Grouping does not depend on client addresses, which several pods can share.
+- **metadata size** — the aggregate budget for added assignment metadata is **512 KiB**, covering the one full snapshot plus all member acknowledgements. Common instance ids and subscription sets are deduplicated inside the snapshot. Added metadata grows with the group's topology instead of copying the entire topology for every member. If the budget is exceeded, normal partition assignment continues and a warning explains why proactive monitoring is unavailable. Kafka's limits on native subscriptions, assignments and group metadata still apply separately.
 - **weights** — the coordinator measures them itself, while the assignment it judges was computed from the group leader's own, equally valid, measurements taken at a different moment. Right after an instance becomes coordinator, its weight store may have no history for the group yet; a check with no usable weight at all is **skipped** rather than judged on partition counts, and the next check normally has weights.
 
-Each of those can make the computed optimum unreachable — and since the assignor is deterministic, an unreachable optimum asks for the same useless rebalance on every check. Three guards keep that from becoming a rebalance storm:
+Weight measurements taken at different times can still make the monitor and assignor disagree about the best assignment. Three guards bound repeated rebalance requests:
 
 1. **Stable groups only.** While the group is rebalancing, the AdminClient reports partial or previous-generation assignments. Judging those would fire again on the rebalance the trigger has just caused, which is a self-sustaining loop. Non-stable checks are skipped entirely and do not even count toward the hysteresis below.
 2. **Hysteresis.** The imbalance must show up on `consumer-balancer.rebalance-min-violated-checks` checks *of one unchanged assignment* (default `2`) before it counts as real rather than as a noisy weight sample. A check that finds the group balanced *decays* that count by one instead of resetting it: right after the load moves, the weight window still spans the load being replaced, so the ratio drifts back and forth across the threshold — a strict reset would restart the count over and over exactly when the trigger is most needed. Moving a partition does reset it, because a streak about one assignment says nothing about another.
@@ -149,6 +149,26 @@ offset-rate rate-interval          60s   the weights must catch up to the new lo
 So a genuine, sustained imbalance is corrected in roughly two minutes, while a disagreement the assignor cannot resolve costs one rebalance and then fades to one attempt every two hours. If your load moves faster than that, shorten `offset-rate.rate-interval` and `coordinator.trigger-check-interval` first — they are what the detection latency is actually made of; `rebalance-min-violated-checks` buys little, because the weight store already averages over its own window and consecutive checks are correlated samples of it.
 
 Note that `consumer-balancer.rebalance-load-imbalance-threshold` stays tight (`1.1`) on purpose. It is tempting to raise it as a storm guard, but the cooldown backoff already bounds what a false positive costs, whereas a raised threshold silently loses real corrections — one badly placed hot partition often shows up as only a 10–20% instance-level skew.
+
+### Static membership and restarts
+
+Kafka's per-consumer `group.instance.id` is separate from the application-instance id shared by consumers in a JVM. An explicit `consumer-balancer.instance-id` remains optional. With the default automatic id, a restarted JVM generates a new application-instance id even if its static consumer identities stay the same.
+
+Kafka may replay a static consumer's cached assignment without running the assignor. Each consumer checks its acknowledgement against its current application-instance id and topics. A mismatch requests a fresh assignment, including when the restarted consumer is not the monitor. Requests are coalesced per JVM and group and retried with backoff; they wait while the group is rebalancing. A static restart can therefore cause an additional group rebalance to refresh instance grouping. A matching acknowledgement ends recovery. Missing or corrupt metadata and an exceeded metadata budget do not create an automatic refresh loop.
+
+Every explicit rebalance request advances a revision included in subscription metadata before asking the consumer to rejoin. This lets Kafka observe a changed subscription even when the monitoring consumer is not Kafka's group leader. Ordinary polling does not change the revision.
+
+### Upgrading monitoring metadata
+
+**Version 10.0.0 requires an interrupted, coordinated upgrade of each consumer group.** The Kafka assignor protocol name changes from `load-aware` to `load-aware-v2`; the Java assignor class and `assignor.load-aware.*` configuration keys stay the same. Old subscription and assignment formats are no longer supported. Configure `LoadAwarePartitionAssignor` as the group's only assignment strategy during this migration; an additional shared strategy would allow Kafka to select a different assignor instead.
+
+1. Stop all old consumers in the group. For Kubernetes, use a deployment procedure that stops every old pod before starting the new consumers; a rolling deployment that waits for new consumers to become ready can stall.
+2. Wait for Kafka to report that the group has no members. Static memberships remain until their session timeouts expire unless explicitly removed through Kafka's member-removal API. Stopping pods alone does not clear them immediately.
+3. Start all consumers on version 10.0.0 with the same `group.id` and committed offsets. Do not delete the group or reset its offsets. Verify that the group becomes stable and a monitor is active.
+
+Starting new consumers while old memberships remain can raise `InconsistentGroupProtocolException`. Kafka classifies this error as non-retriable, so affected consumers may need restarting after the old memberships are gone. The interruption includes any wait for static session expiry. Rolling back across this protocol boundary requires the same stop-and-start procedure.
+
+`InstanceUserData`, `GroupInstanceUserData`, `MemberIdTracker.recordInstanceIds/getInstanceIds`, and `CoordinatorElection.Builder.setMemberIdsSupplier` have been removed. Use `ConsumerGroupBalancers` (also used by the starter) to wire ownership, subscription revisions and recovery together; manual core integrations need the shared tracker described below. Automatic application-instance IDs and ordinary static-member restart recovery remain supported within version 10.
 
 ## Several consumer groups
 
@@ -303,7 +323,7 @@ The trigger only evaluates on the elected coordinator, so on every other instanc
 
 - `assignor.load-aware.weight-service` — `WeightService` used for assignment. When absent, the default selected by `assignor.load-aware.weight-store` is built.
 - `assignor.load-aware.balance-service` — `BalanceService` used for assignment (default: `SortingRoundRobinBalanceService`).
-- `assignor.load-aware.member-id-tracker` — optional `MemberIdTracker` that receives this consumer's member id, and the group's `memberId → instanceId` mapping, after every rebalance (needed for proactive rebalance: without it the trigger cannot group members into instances and skips every check).
+- `assignor.load-aware.member-id-tracker` — optional `MemberIdTracker` that receives local member identities and monitoring acknowledgements, plus the full topology on the designated monitor. Required for proactive monitoring and static-restart recovery; use the same tracker in the assignor, election, trigger and coordinator manager.
 
 Plus one plain-string key:
 
@@ -352,6 +372,8 @@ balancers.start();
 // ... on shutdown: balancers.close(); admin.close();
 ```
 
+`ConsumerGroupBalancers` is the recommended entry point for proactive rebalance. If you construct the core components manually, pass one shared `MemberIdTracker` instance in the consumer configs and to `ThresholdTrigger`, and call `CoordinatorElection.Builder.setMemberIdTracker(tracker)`. The election builder requires this tracker. `CoordinatorManager(election, trigger, initiator, checkIntervalMs)` automatically uses the election's tracker. This shared state connects monitor ownership to the delivered topology, updates subscription revisions, and enables recovery on nonmonitor JVMs.
+
 > Kafka logs a "supplied but isn't a known config" warning for these custom keys — that is harmless.
 
 ## Custom weight store
@@ -368,7 +390,7 @@ Optionally provide your own `io.github.ruskaof.balancer.prometheus.KafkaRateProm
 - With the Prometheus store, your PromQL must be an **instant vector** query returning series with `topic` and `partition` labels so weights can be mapped to `TopicPartition`. If your metrics use different label names (e.g. `kafka_topic`), set `consumer-balancer.prometheus.topic-label` / `partition-label` accordingly — remember the `by (...)` clause of the query must keep those labels. Partitions without a sample — including `NaN`/`Inf` samples — get the default weight `1.0`.
 - Partitions are assigned only to members subscribed to their topic, so groups whose members subscribe to different topic sets are handled correctly.
 - With more members than partitions, partitions spread evenly across **instances** (some members inside each instance stay idle); with fewer instances than partitions than members, every instance carries a near-equal share of the measured traffic. Instances receive equal traffic regardless of their member counts — an instance running fewer threads gets the same load on fewer, busier members.
-- The threshold trigger groups members into instances by the mapping the leader sends with each assignment, so its grouping matches the assignor's exactly, whatever the pods' addresses look like. It still assumes every member is eligible for every topic, so instances running *different* sets of listeners make the trigger's view and the assignor's diverge; the cooldown backoff then fades the useless rebalances out and logs a warning naming the cause. When no mapping is available — mid rolling upgrade from a version that does not send one, or a group too large for the mapping's size budget — the trigger logs a warning and skips its checks until one arrives. See [Proactive rebalance](#proactive-rebalance).
+- The threshold trigger uses the assignor's topology for both instance grouping and actual topic subscriptions. An unavailable or stale topology pauses monitoring until a valid snapshot arrives. Check assignor logs for protocol or metadata-budget warnings if no monitor becomes active. See [Proactive rebalance](#proactive-rebalance) and [Static membership and restarts](#static-membership-and-restarts).
 - The trigger only judges a **stable** group, so a check landing during a rebalance is skipped rather than acted on. Expect `ThresholdTrigger skipped ... group state is PREPARING_REBALANCE` at debug level around every rebalance.
 - Proactive rebalance covers the group of `spring.kafka.consumer.group-id` and every group [registered](#several-consumer-groups) with a `ConsumerGroupBalancers` registry; without the property, only registered groups are balanced proactively, and an INFO line at startup says so. Only the listener containers of a group — narrowed by `consumer-balancer.listener-ids` or the initiator's own filter — receive `enforceRebalance()`. When no container matches, a warning is logged instead of silently doing nothing.
 - If load-aware assignment throws, `LoadAwarePartitionAssignor` falls back to Kafka’s `RoundRobinAssignor`: the cause is logged as a warning, followed by a `Round-robin fallback distribution ...` INFO line showing how many partitions each instance received. On this path partition weights are ignored entirely — an instance running twice the members receives roughly twice the partitions.
@@ -427,6 +449,8 @@ This repository is built with **Gradle on the PATH** (not the wrapper), for exam
 ```bash
 gradle test
 ```
+
+The core unit suite includes a synthetic group of **500 static consumers across 100 application instances and 500 partitions**. It verifies metadata delivery and a proactive trigger decision without creating that many broker resources. A separate metadata test verifies approximately linear growth when member count doubles. These are functional checks, not a broker capacity or throughput benchmark.
 
 ## Performance test (Docker)
 

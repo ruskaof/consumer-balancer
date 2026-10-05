@@ -30,14 +30,14 @@ public final class InstanceIdResolver {
      * otherwise.
      *
      * @throws IllegalArgumentException when the configured id exceeds
-     *                                  {@link InstanceUserData#MAX_INSTANCE_ID_BYTES} UTF-8 bytes
+     *                                  {@link MonitoringProtocol#MAX_STRING_BYTES} UTF-8 bytes
      */
     public static String resolve(String configuredInstanceId) {
         if (configuredInstanceId != null && !configuredInstanceId.isBlank()) {
             String instanceId = configuredInstanceId.trim();
-            if (instanceId.getBytes(StandardCharsets.UTF_8).length > InstanceUserData.MAX_INSTANCE_ID_BYTES) {
+            if (instanceId.getBytes(StandardCharsets.UTF_8).length > MonitoringProtocol.MAX_STRING_BYTES) {
                 throw new IllegalArgumentException(
-                        "Configured instance id exceeds " + InstanceUserData.MAX_INSTANCE_ID_BYTES
+                        "Configured instance id exceeds " + MonitoringProtocol.MAX_STRING_BYTES
                                 + " UTF-8 bytes: " + instanceId);
             }
             return instanceId;

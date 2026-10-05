@@ -4,9 +4,8 @@ import io.github.ruskaof.balancer.LoadAwarePartitionAssignor.LoadAwareAssignorCo
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
-import io.github.ruskaof.balancer.instance.GroupInstanceUserData;
 import io.github.ruskaof.balancer.instance.InstanceIdResolver;
-import io.github.ruskaof.balancer.instance.InstanceUserData;
+import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import io.github.ruskaof.balancer.weight.KafkaOffsetRateWeightService;
 import io.github.ruskaof.balancer.weight.PrometheusWeightService;
 import io.github.ruskaof.balancer.weight.WeightService;
@@ -37,6 +36,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * topics.
  */
 class LoadAwarePartitionAssignorTest {
+
+    @Test
+    void protocolNameSeparatesIncompatibleMajorVersions() {
+        assertEquals("load-aware-v2", new LoadAwarePartitionAssignor().name());
+    }
 
     @Test
     void assignMatchesGreedyBalanceWhenWeightsAreProvided() {
@@ -118,10 +122,9 @@ class LoadAwarePartitionAssignorTest {
                 LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
                 LoadAwareAssignorConfig.INSTANCE_ID, "pod-1"));
 
-        InstanceUserData.Decoded decoded =
-                InstanceUserData.decode(assignor.subscriptionUserData(Set.of("t")));
+        var decoded = MonitoringProtocol.readSubscription(assignor.subscriptionUserData(Set.of("t")));
 
-        assertTrue(decoded.ok());
+        assertNotNull(decoded);
         assertEquals("pod-1", decoded.instanceId());
     }
 
@@ -131,11 +134,33 @@ class LoadAwarePartitionAssignorTest {
         assignor.configure(Map.of(
                 LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of()));
 
-        InstanceUserData.Decoded decoded =
-                InstanceUserData.decode(assignor.subscriptionUserData(Set.of("t")));
+        var decoded = MonitoringProtocol.readSubscription(assignor.subscriptionUserData(Set.of("t")));
 
-        assertTrue(decoded.ok());
+        assertNotNull(decoded);
         assertEquals(InstanceIdResolver.autoInstanceId(), decoded.instanceId());
+    }
+
+    @Test
+    void subscriptionAdvertisesMonitoringOnlyWhenATrackerIsConfigured() {
+        LoadAwarePartitionAssignor plain = configuredAssignor();
+        assertFalse(MonitoringProtocol.readSubscription(plain.subscriptionUserData(Set.of("t"))).monitoring());
+
+        MemberIdTracker tracker = new MemberIdTracker();
+        LoadAwarePartitionAssignor monitored = new LoadAwarePartitionAssignor();
+        monitored.configure(Map.of(
+                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
+                LoadAwareAssignorConfig.MEMBER_ID_TRACKER, tracker,
+                "group.id", "g"));
+        var initial = MonitoringProtocol.readSubscription(monitored.subscriptionUserData(Set.of("t")));
+        assertTrue(initial.monitoring());
+        assertEquals(InstanceIdResolver.autoInstanceId(), initial.instanceId());
+        assertEquals(initial, MonitoringProtocol.readSubscription(monitored.subscriptionUserData(Set.of("t"))),
+                "ordinary subscription reads must not change the request revision");
+
+        tracker.prepareRebalance("g");
+        var requested = MonitoringProtocol.readSubscription(monitored.subscriptionUserData(Set.of("t")));
+        assertTrue(requested.revision() > initial.revision(), "an explicit rejoin must change subscription metadata");
+        assertEquals(requested, MonitoringProtocol.readSubscription(monitored.subscriptionUserData(Set.of("t"))));
     }
 
     @Test
@@ -151,9 +176,9 @@ class LoadAwarePartitionAssignorTest {
                 LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
 
         Map<String, Subscription> subscriptions = new TreeMap<>();
-        subscriptions.put("a1", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
-        subscriptions.put("a2", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
-        subscriptions.put("b1", new Subscription(List.of("t"), InstanceUserData.encode("pod-b")));
+        subscriptions.put("a1", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-a", false, 0)));
+        subscriptions.put("a2", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-a", false, 0)));
+        subscriptions.put("b1", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-b", false, 0)));
 
         assignor.assign(Map.of("t", 2), subscriptions);
 
@@ -164,7 +189,7 @@ class LoadAwarePartitionAssignorTest {
     }
 
     @Test
-    void assignTreatsMembersWithoutReadableInstanceIdAsTheirOwnInstances() {
+    void unreadableSubscriptionsFallBackToRoundRobinWithoutInventingInstanceIds() {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
         AtomicReference<Collection<GroupMember>> capturedMembers = new AtomicReference<>();
         BalanceService capturingBalance = (members, weights) -> {
@@ -176,20 +201,19 @@ class LoadAwarePartitionAssignorTest {
                 LoadAwareAssignorConfig.BALANCE_SERVICE, capturingBalance));
 
         Map<String, Subscription> subscriptions = new TreeMap<>();
-        subscriptions.put("ok", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
+        subscriptions.put("ok", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-a", true, 0)));
         subscriptions.put("nullData", new Subscription(List.of("t"), null));
         subscriptions.put("emptyData", new Subscription(List.of("t"), ByteBuffer.allocate(0)));
         subscriptions.put("garbage", new Subscription(List.of("t"), ByteBuffer.wrap(new byte[]{7})));
 
-        Map<String, List<TopicPartition>> assignment = assignor.assign(Map.of("t", 4), subscriptions);
+        GroupAssignment assignment = assignor.assign(cluster("t", 4), new GroupSubscription(subscriptions));
 
-        assertEquals(
-                Map.of("ok", "pod-a", "nullData", "nullData", "emptyData", "emptyData", "garbage", "garbage"),
-                capturedMembers.get().stream().collect(
-                        Collectors.toMap(GroupMember::memberId, GroupMember::instanceId)),
-                "members without a readable instance id must fall back to their member id");
-        assertEquals(4, assignment.values().stream().mapToInt(List::size).sum(),
-                "every partition must still be assigned");
+        assertNull(capturedMembers.get(), "load-aware balancing needs a valid topology");
+        assertEquals(new RoundRobinAssignor().assign(Map.of("t", 4), subscriptions),
+                assignment.groupAssignment().entrySet().stream()
+                        .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().partitions())));
+        assignment.groupAssignment().values().forEach(member -> assertNull(member.userData(),
+                "an incomplete topology must not enable monitoring"));
     }
 
     @Test
@@ -426,18 +450,26 @@ class LoadAwarePartitionAssignorTest {
     }
 
     @Test
-    void assignSendsTheGroupsInstanceIdsBackToEveryMember() {
+    void assignSendsTheTopologyOnlyToTheMonitorAndAcknowledgesEveryMember() {
         LoadAwarePartitionAssignor assignor = configuredAssignor();
 
         GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(instanceSubscriptions()));
 
-        Map<String, String> expected = Map.of("a1", "pod-a", "a2", "pod-a", "b1", "pod-b");
-        assertEquals(expected.keySet(), assignment.groupAssignment().keySet());
+        Map<String, MonitoringProtocol.Member> expected = Map.of(
+                "m:a1", new MonitoringProtocol.Member("pod-a", Set.of("t")),
+                "m:a2", new MonitoringProtocol.Member("pod-a", Set.of("t")),
+                "m:b1", new MonitoringProtocol.Member("pod-b", Set.of("t")));
+        assertEquals(Set.of("a1", "a2", "b1"), assignment.groupAssignment().keySet());
+        var owner = MonitoringProtocol.readAssignment(assignment.groupAssignment().get("a1").userData());
+        assertNotNull(owner);
         assignment.groupAssignment().forEach((memberId, memberAssignment) -> {
-            GroupInstanceUserData.Decoded decoded =
-                    GroupInstanceUserData.decode(memberAssignment.userData());
-            assertTrue(decoded.ok(), memberId + " received no readable mapping");
-            assertEquals(expected, decoded.instanceIdByMember(), memberId + " received the wrong mapping");
+            var decoded = MonitoringProtocol.readAssignment(memberAssignment.userData());
+            assertNotNull(decoded, memberId + " received no readable topology acknowledgement");
+            assertEquals("m:a1", decoded.ownerIdentity());
+            assertEquals(owner.snapshotId(), decoded.snapshotId());
+            assertEquals(expected.get("m:" + memberId).instanceId(), decoded.instanceId());
+            assertEquals(Set.of("t"), decoded.topics());
+            assertEquals(memberId.equals("a1") ? expected : Map.of(), decoded.members());
         });
     }
 
@@ -456,7 +488,7 @@ class LoadAwarePartitionAssignorTest {
         for (String memberId : List.of("a2", "b1")) {
             ByteBuffer other = assignment.groupAssignment().get(memberId).userData();
             assertEquals(0, other.position(), memberId + " shares its buffer position with another member");
-            assertTrue(GroupInstanceUserData.decode(other).ok(), memberId + " lost its mapping");
+            assertNotNull(MonitoringProtocol.readAssignment(other), memberId + " lost its metadata");
         }
     }
 
@@ -472,10 +504,8 @@ class LoadAwarePartitionAssignorTest {
 
         // The mapping comes from the subscriptions, not from the assignment, so a degraded
         // assignment must not also blind the proactive trigger.
-        assertEquals(
-                Map.of("a1", "pod-a", "a2", "pod-a", "b1", "pod-b"),
-                GroupInstanceUserData.decode(
-                        assignment.groupAssignment().get("a1").userData()).instanceIdByMember());
+        assertEquals(Set.of("m:a1", "m:a2", "m:b1"), MonitoringProtocol.readAssignment(
+                assignment.groupAssignment().get("a1").userData()).members().keySet());
     }
 
     @Test
@@ -483,10 +513,10 @@ class LoadAwarePartitionAssignorTest {
         LoadAwarePartitionAssignor assignor = configuredAssignor();
         Map<String, Subscription> subscriptions = new TreeMap<>();
         // Long member ids reach the budget at a member count the test can still build.
-        String padding = "x".repeat(1000);
+        String padding = "x".repeat(2000);
         for (int i = 0; i < 300; i++) {
             subscriptions.put("member-" + i + "-" + padding,
-                    new Subscription(List.of("t"), InstanceUserData.encode("pod-" + i)));
+                    new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-" + i, true, 0)));
         }
 
         GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(subscriptions));
@@ -497,39 +527,79 @@ class LoadAwarePartitionAssignorTest {
     }
 
     @Test
-    void onAssignmentRecordsTheGroupsInstanceIdsInTheConfiguredTracker() {
+    void onAssignmentMakesTheDeliveredTopologyAvailableToTheTracker() {
         LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
         MemberIdTracker tracker = new MemberIdTracker();
         assignor.configure(Map.of(
                 LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
-                LoadAwareAssignorConfig.MEMBER_ID_TRACKER, tracker));
-
-        Map<String, String> mapping = Map.of("a1", "pod-a", "b1", "pod-b");
+                LoadAwareAssignorConfig.MEMBER_ID_TRACKER, tracker,
+                LoadAwareAssignorConfig.INSTANCE_ID, "pod-a"));
+        assignor.subscriptionUserData(Set.of("t"));
+        GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(instanceSubscriptions()));
         assignor.onAssignment(
-                new Assignment(List.of(), GroupInstanceUserData.encode(mapping)),
+                assignment.groupAssignment().get("a1"),
                 new ConsumerGroupMetadata("g", 7, "a1", Optional.empty()));
 
-        assertEquals(mapping, tracker.getInstanceIds("g"));
+        var liveMembers = List.of(liveMember("a1", Optional.empty()), liveMember("a2", Optional.empty()),
+                liveMember("b1", Optional.empty()));
+        List<GroupMember> resolved = tracker.resolveMembers("g", liveMembers);
+        assertNotNull(resolved);
+        assertEquals(Map.of("a1", "pod-a", "a2", "pod-a", "b1", "pod-b"), resolved.stream()
+                .collect(Collectors.toMap(GroupMember::memberId, GroupMember::instanceId)));
     }
 
     @Test
-    void onAssignmentKeepsTheKnownInstanceIdsWhenTheLeaderSendsNone() {
-        LoadAwarePartitionAssignor assignor = new LoadAwarePartitionAssignor();
-        MemberIdTracker tracker = new MemberIdTracker();
-        assignor.configure(Map.of(
-                LoadAwareAssignorConfig.WEIGHT_SERVICE, (WeightService) partitions -> Map.of(),
-                LoadAwareAssignorConfig.MEMBER_ID_TRACKER, tracker));
-        Map<String, String> mapping = Map.of("a1", "pod-a");
-        assignor.onAssignment(
-                new Assignment(List.of(), GroupInstanceUserData.encode(mapping)),
-                new ConsumerGroupMetadata("g", 7, "a1", Optional.empty()));
+    void monitoringOwnershipUsesStaticIdentityAndDoesNotRequireAssignedPartitions() {
+        LoadAwarePartitionAssignor assignor = configuredAssignor();
+        Subscription owner = new Subscription(List.of("idle"), MonitoringProtocol.subscription("pod-a", true, 7));
+        owner.setGroupInstanceId(Optional.of("static-a"));
+        Subscription worker = new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-b", true, 8));
+        worker.setGroupInstanceId(Optional.of("static-b"));
+        Subscription unsupported = new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-c", false, 0));
+        unsupported.setGroupInstanceId(Optional.of("static-0"));
+        GroupAssignment assignment = assignor.assign(cluster("t", 2), new GroupSubscription(
+                Map.of("z-owner", owner, "a-worker", worker, "first-unsupported", unsupported)));
 
-        // A leader on an older version sends nothing; the trigger checks coverage itself.
-        assignor.onAssignment(
-                new Assignment(List.of()),
-                new ConsumerGroupMetadata("g", 8, "a1", Optional.empty()));
+        assertTrue(assignment.groupAssignment().get("z-owner").partitions().isEmpty());
+        var topology = MonitoringProtocol.readAssignment(assignment.groupAssignment().get("z-owner").userData());
+        assertNotNull(topology);
+        assertEquals("s:static-a", topology.ownerIdentity());
+        assertEquals(7, topology.revision());
+        assertEquals(Set.of("idle"), topology.members().get("s:static-a").topics());
+        assertEquals(Set.of("t"), topology.members().get("s:static-b").topics());
+        assertEquals(8, MonitoringProtocol.readAssignment(
+                assignment.groupAssignment().get("a-worker").userData()).revision());
+        assertTrue(MonitoringProtocol.readAssignment(
+                assignment.groupAssignment().get("first-unsupported").userData()).members().isEmpty());
+    }
 
-        assertEquals(mapping, tracker.getInstanceIds("g"));
+    @Test
+    void noMonitoringMetadataIsSentWithoutACapableMonitor() {
+        GroupAssignment assignment = configuredAssignor().assign(cluster("t", 2), new GroupSubscription(Map.of(
+                "a", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-a", false, 0)),
+                "b", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-b", false, 0)))));
+        assignment.groupAssignment().values().forEach(member -> assertNull(member.userData()));
+    }
+
+    @Test
+    void fiveHundredMembersAndPartitionsFitTheBudgetAndMetadataGrowsLinearly() {
+        GroupAssignment small = scaleAssignment(250);
+        GroupAssignment required = scaleAssignment(500);
+        assertEquals(500, required.groupAssignment().size());
+        assertEquals(500, required.groupAssignment().values().stream().mapToInt(a -> a.partitions().size()).sum());
+        long largeBytes = metadataBytes(required);
+        long smallBytes = metadataBytes(small);
+        assertTrue(largeBytes < MonitoringProtocol.MAX_TOTAL_BYTES);
+        assertTrue(largeBytes >= smallBytes * 1.9 && largeBytes <= smallBytes * 2.1,
+                "doubling group size should approximately double metadata: " + smallBytes + " -> " + largeBytes);
+        List<MonitoringProtocol.Assignment> topologies = required.groupAssignment().values().stream()
+                .map(a -> MonitoringProtocol.readAssignment(a.userData()))
+                .peek(a -> assertNotNull(a, "every member must receive a readable acknowledgement"))
+                .filter(a -> !a.members().isEmpty()).toList();
+        assertEquals(1, topologies.size());
+        assertEquals(500, topologies.getFirst().members().size());
+        assertEquals(100, topologies.getFirst().members().values().stream()
+                .map(MonitoringProtocol.Member::instanceId).distinct().count());
     }
 
     @Test
@@ -567,10 +637,34 @@ class LoadAwarePartitionAssignorTest {
     /** Two members in pod-a, one in pod-b — the case the trigger has to see as two instances. */
     private static Map<String, Subscription> instanceSubscriptions() {
         Map<String, Subscription> subscriptions = new TreeMap<>();
-        subscriptions.put("a1", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
-        subscriptions.put("a2", new Subscription(List.of("t"), InstanceUserData.encode("pod-a")));
-        subscriptions.put("b1", new Subscription(List.of("t"), InstanceUserData.encode("pod-b")));
+        subscriptions.put("a1", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-a", true, 0)));
+        subscriptions.put("a2", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-a", true, 0)));
+        subscriptions.put("b1", new Subscription(List.of("t"), MonitoringProtocol.subscription("pod-b", true, 0)));
         return subscriptions;
+    }
+
+    private static org.apache.kafka.clients.admin.MemberDescription liveMember(
+            String memberId, Optional<String> staticId) {
+        return new org.apache.kafka.clients.admin.MemberDescription(memberId, staticId, "client", "host",
+                new org.apache.kafka.clients.admin.MemberAssignment(Set.of()));
+    }
+
+    private static GroupAssignment scaleAssignment(int memberCount) {
+        Map<String, Subscription> subscriptions = new TreeMap<>();
+        for (int i = 0; i < memberCount; i++) {
+            var subscription = new Subscription(List.of("t"),
+                    MonitoringProtocol.subscription(String.format("pod-%04d", i / 5), true, 0));
+            subscription.setGroupInstanceId(Optional.of(String.format("consumer-%04d", i)));
+            subscriptions.put(String.format("member-%04d", i), subscription);
+        }
+        return configuredAssignor().assign(cluster("t", memberCount), new GroupSubscription(subscriptions));
+    }
+
+    private static long metadataBytes(GroupAssignment assignment) {
+        return assignment.groupAssignment().values().stream().mapToLong(a -> {
+            assertNotNull(a.userData(), "the metadata budget must not disable proactive monitoring");
+            return a.userData().remaining();
+        }).sum();
     }
 
     private static Cluster cluster(String topic, int partitionCount) {
@@ -584,9 +678,8 @@ class LoadAwarePartitionAssignorTest {
 
     private static Map<String, Subscription> subscriptions(Map<String, List<String>> topicsByMember) {
         Map<String, Subscription> subscriptions = new TreeMap<>();
-        ByteBuffer userData = ByteBuffer.allocate(0);
         topicsByMember.forEach((member, topics) ->
-                subscriptions.put(member, new Subscription(topics, userData)));
+                subscriptions.put(member, new Subscription(topics, MonitoringProtocol.subscription(member, false, 0))));
         return subscriptions;
     }
 

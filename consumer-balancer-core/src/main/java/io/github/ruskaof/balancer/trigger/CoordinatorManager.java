@@ -1,7 +1,9 @@
 package io.github.ruskaof.balancer.trigger;
 
+import io.github.ruskaof.balancer.MemberIdTracker;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -15,6 +17,7 @@ public class CoordinatorManager implements AutoCloseable {
     private final RebalanceTrigger trigger;
     private final RebalanceInitiator rebalanceInitiator;
     private final long triggerCheckIntervalMs;
+    private final MemberIdTracker memberIdTracker;
 
     private final String groupId;
     private final ScheduledExecutorService scheduler;
@@ -31,6 +34,7 @@ public class CoordinatorManager implements AutoCloseable {
         this.trigger = trigger;
         this.rebalanceInitiator = rebalanceInitiator;
         this.triggerCheckIntervalMs = triggerCheckIntervalMs;
+        this.memberIdTracker = Objects.requireNonNull(election.memberIdTracker(), "memberIdTracker");
         this.groupId = election.getGroupId();
         this.scheduler = Executors.newScheduledThreadPool(1, r -> {
             Thread t = new Thread(r, "coordinator-trigger-" + groupId);
@@ -44,6 +48,10 @@ public class CoordinatorManager implements AutoCloseable {
         // immediate election result would be notified into an empty listener list and
         // monitoring would only start on the next status change.
         election.addListener(this::onCoordinatorStatusChange);
+        // A restarted static follower must be able to refresh a cached assignment even
+        // while it is not the monitor. This timer only reads local state until needed.
+        scheduler.scheduleWithFixedDelay(this::refreshTopology, 0,
+                Math.min(1_000, triggerCheckIntervalMs), TimeUnit.MILLISECONDS);
         election.start();
     }
 
@@ -72,12 +80,31 @@ public class CoordinatorManager implements AutoCloseable {
             return;
 
         try {
-            if (trigger.shouldTrigger()) {
+            MemberIdTracker.SnapshotToken observed = memberIdTracker.monitoringSnapshot(groupId);
+            if (trigger.shouldTrigger() && running.get() && !Thread.currentThread().isInterrupted()
+                    && election.confirmCoordinator() && observed != null
+                    && memberIdTracker.prepareRebalance(groupId, observed)) {
                 log.warn("Trigger condition met for group '{}'! Initiating rebalance...", groupId);
                 rebalanceInitiator.initiateRebalance();
             }
         } catch (Exception e) {
             log.error("Error evaluating the trigger of group '{}'", groupId, e);
+        }
+    }
+
+    private void refreshTopology() {
+        if (!running.get()) return;
+        try {
+            if (!memberIdTracker.topologyRefreshDue(groupId, System.nanoTime())) return;
+            if (!election.confirmStableGroup()) {
+                memberIdTracker.deferTopologyRefresh(groupId, System.nanoTime());
+                return;
+            }
+            if (running.get() && memberIdTracker.claimTopologyRefresh(groupId, System.nanoTime())) {
+                rebalanceInitiator.initiateRebalance();
+            }
+        } catch (Exception e) {
+            log.warn("Could not request a topology refresh for group '{}'", groupId, e);
         }
     }
 
