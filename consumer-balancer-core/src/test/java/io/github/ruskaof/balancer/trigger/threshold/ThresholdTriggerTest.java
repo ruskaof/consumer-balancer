@@ -501,8 +501,16 @@ class ThresholdTriggerTest {
         DescribeConsumerGroupsResult result = mock(DescribeConsumerGroupsResult.class);
         when(result.describedGroups()).thenReturn(futures);
         when(adminClient.describeConsumerGroups(List.of(GROUP))).thenReturn(result);
-        // What the leader would have sent back with the assignment this group is now on.
-        memberIdTracker.recordInstanceIds(GROUP, ++generation, stubbedInstanceIds);
+        // These fixtures subscribe to t, including idle members. Deliver the same protocol
+        // the assignor uses so trigger tests do not bypass topology validation.
+        Map<String, MonitoringProtocol.Member> topology = new LinkedHashMap<>();
+        stubbedInstanceIds.forEach((id, instance) ->
+                topology.put("m:" + id, new MonitoringProtocol.Member(instance, Set.of("t"))));
+        String owner = stubbedInstanceIds.keySet().stream().findFirst().orElse("unavailable");
+        String instance = stubbedInstanceIds.getOrDefault(owner, "unavailable");
+        var payload = topology.isEmpty() ? null : MonitoringProtocol.assignment(new MonitoringProtocol.Assignment(
+                UUID.randomUUID(), "m:" + owner, instance, Set.of("t"), 0, topology));
+        memberIdTracker.onAssignment(GROUP, ++generation, null, owner, "m:" + owner, instance, Set.of("t"), payload);
         stubbedInstanceIds.clear();
     }
 
@@ -512,7 +520,7 @@ class ThresholdTriggerTest {
         return memberWithoutInstanceId(consumerId, partitions);
     }
 
-    /** A member the leader's mapping does not cover — an older version, say. */
+    /** A live member missing from the delivered snapshot, making that topology stale. */
     private static MemberDescription memberWithoutInstanceId(String consumerId, TopicPartition... partitions) {
         MemberDescription member = mock(MemberDescription.class);
         when(member.consumerId()).thenReturn(consumerId);

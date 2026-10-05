@@ -37,8 +37,8 @@ public final class MonitoringProtocol {
     private static final int ASSIGNMENT_MAGIC = 0xCB4D4F4E;
     private static final int SUBSCRIPTION_MAGIC = 0xCB4D5355;
     private static final short VERSION = 1;
-    private static final int MAX_STRING_BYTES = Short.MAX_VALUE;
-    private static final int SUBSCRIPTION_SUFFIX_BYTES = Integer.BYTES + Short.BYTES + 1 + Long.BYTES;
+    /** Maximum UTF-8 byte length of an instance id, consumer identity or topic. */
+    public static final int MAX_STRING_BYTES = Short.MAX_VALUE;
 
     private MonitoringProtocol() {
     }
@@ -89,14 +89,16 @@ public final class MonitoringProtocol {
         return (groupInstanceId.isPresent() ? "s:" : "m:") + id;
     }
 
-    /** The existing instance-ID prefix stays readable by older assignors. */
+    /** Encodes the subscription for the load-aware-v2 assignor protocol. */
     public static ByteBuffer subscription(String instanceId, boolean monitoring, long revision) {
         requireRevision(revision);
-        ByteBuffer prefix = InstanceUserData.encode(instanceId);
-        ByteBuffer result = ByteBuffer.allocate(prefix.remaining() + SUBSCRIPTION_SUFFIX_BYTES);
-        result.put(prefix).putInt(SUBSCRIPTION_MAGIC).putShort(VERSION)
-                .put((byte) (monitoring ? 1 : 0)).putLong(revision).flip();
-        return result;
+        Writer writer = new Writer();
+        writer.integer(SUBSCRIPTION_MAGIC);
+        writer.shortInteger(VERSION);
+        writer.string(instanceId);
+        writer.flag(monitoring);
+        writer.longInteger(revision);
+        return ByteBuffer.wrap(writer.bytes.toByteArray());
     }
 
     /** Returns null for absent/unreadable data, without moving the caller's buffer. */
@@ -106,15 +108,11 @@ public final class MonitoringProtocol {
         }
         try {
             ByteBuffer buffer = userData.duplicate();
-            if (buffer.getShort() < 1) {
+            if (buffer.getInt() != SUBSCRIPTION_MAGIC || buffer.getShort() != VERSION) {
                 return null;
             }
             String instanceId = getString(buffer);
-            if (!buffer.hasRemaining()) {
-                return new Subscription(instanceId, false, 0);
-            }
-            if (buffer.remaining() != SUBSCRIPTION_SUFFIX_BYTES
-                    || buffer.getInt() != SUBSCRIPTION_MAGIC || buffer.getShort() != VERSION) {
+            if (buffer.remaining() != 1 + Long.BYTES) {
                 return null;
             }
             byte monitoring = buffer.get();
@@ -368,6 +366,11 @@ public final class MonitoringProtocol {
             bytes.write(value >>> 16);
             bytes.write(value >>> 8);
             bytes.write(value);
+        }
+
+        void flag(boolean value) {
+            reserve(1);
+            bytes.write(value ? 1 : 0);
         }
 
         void longInteger(long value) {

@@ -36,13 +36,10 @@ class MonitoringProtocolTest {
     }
 
     @Test
-    void subscriptionPrefixRemainsReadableAndLegacySubscriptionsAreNotMonitorCandidates() {
+    void roundTripsMonitoringAndPassiveSubscriptions() {
         ByteBuffer encoded = MonitoringProtocol.subscription("pod-a", true, 19);
 
-        assertEquals("pod-a", InstanceUserData.decode(encoded).instanceId());
         assertEquals(new Subscription("pod-a", true, 19), MonitoringProtocol.readSubscription(encoded));
-        assertEquals(new Subscription("pod-a", false, 0),
-                MonitoringProtocol.readSubscription(InstanceUserData.encode("pod-a")));
         assertEquals(new Subscription("pod-a", false, 20),
                 MonitoringProtocol.readSubscription(MonitoringProtocol.subscription("pod-a", false, 20)));
     }
@@ -58,12 +55,13 @@ class MonitoringProtocolTest {
     }
 
     @Test
-    void assignmentIsDistinctFromTheLegacyMappingProtocol() {
-        ByteBuffer legacy = GroupInstanceUserData.encode(Map.of("member-a", "pod-a"));
-        ByteBuffer current = MonitoringProtocol.assignment(owner(Map.of(OWNER, new Member("pod-a", TOPICS))));
-
-        assertNull(MonitoringProtocol.readAssignment(legacy));
-        assertFalse(GroupInstanceUserData.decode(current).ok());
+    void rejectsWrongMessageTypesAndThePreviousSubscriptionFormat() {
+        ByteBuffer assignment = MonitoringProtocol.assignment(owner(Map.of(OWNER, new Member("pod-a", TOPICS))));
+        assertNull(MonitoringProtocol.readSubscription(assignment));
+        assertNull(MonitoringProtocol.readAssignment(MonitoringProtocol.subscription("pod-a", true, 0)));
+        // Pre-10.0 subscription bytes: version=1, id length=5, "pod-a". No old codec is retained.
+        ByteBuffer previous = ByteBuffer.wrap(new byte[]{0, 1, 0, 5, 'p', 'o', 'd', '-', 'a'});
+        assertNull(MonitoringProtocol.readSubscription(previous));
     }
 
     @Test
@@ -128,24 +126,24 @@ class MonitoringProtocolTest {
         assertNull(MonitoringProtocol.readAssignment(trailing));
 
         ByteBuffer subscription = MonitoringProtocol.subscription("pod-a", true, 3);
-        subscription.putShort(InstanceUserData.encode("pod-a").remaining() + Integer.BYTES, (short) 2);
+        subscription.putShort(Integer.BYTES, (short) 2);
         assertNull(MonitoringProtocol.readSubscription(subscription));
+        subscription.putShort(Integer.BYTES, (short) 1);
+        ByteBuffer extra = ByteBuffer.allocate(subscription.remaining() + 1).put(subscription).put((byte) 0).flip();
+        assertNull(MonitoringProtocol.readSubscription(extra));
     }
 
     @Test
-    void everyTruncatedAssignmentAndSubscriptionExtensionIsRejected() {
+    void everyTruncatedAssignmentAndSubscriptionIsRejected() {
         ByteBuffer assignment = MonitoringProtocol.assignment(owner(Map.of(OWNER, new Member("pod-a", TOPICS))));
         for (int length = 0; length < assignment.remaining(); length++) {
             assertNull(MonitoringProtocol.readAssignment(assignment.duplicate().limit(length)), "length " + length);
         }
 
         ByteBuffer subscription = MonitoringProtocol.subscription("pod-a", true, 4);
-        int legacyLength = InstanceUserData.encode("pod-a").remaining();
         for (int length = 0; length < subscription.remaining(); length++) {
-            if (length != legacyLength) {
-                assertNull(MonitoringProtocol.readSubscription(subscription.duplicate().limit(length)),
-                        "length " + length);
-            }
+            assertNull(MonitoringProtocol.readSubscription(subscription.duplicate().limit(length)),
+                    "length " + length);
         }
     }
 
@@ -206,6 +204,10 @@ class MonitoringProtocolTest {
 
     @Test
     void rejectsInvalidRecordsAndOwnerlessTopology() {
+        assertThrows(IllegalArgumentException.class, () -> MonitoringProtocol.subscription(null, true, 0));
+        assertThrows(IllegalArgumentException.class, () -> MonitoringProtocol.subscription(" ", true, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> MonitoringProtocol.subscription("я".repeat(20_000), true, 0));
         assertThrows(IllegalArgumentException.class, () -> MonitoringProtocol.subscription("pod-a", true, -1));
         assertThrows(IllegalArgumentException.class, () -> new Member(" ", TOPICS));
         assertThrows(IllegalArgumentException.class, () -> new Member("pod-a", Set.of(" ")));

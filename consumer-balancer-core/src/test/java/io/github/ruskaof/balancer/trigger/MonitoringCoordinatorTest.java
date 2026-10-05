@@ -49,10 +49,9 @@ class MonitoringCoordinatorTest {
     }
 
     @Test
-    void manualElectionCannotSilentlyUseTheOldMemberIdPolicy() {
+    void manualElectionRequiresTheAssignorsTracker() {
         assertThrows(IllegalArgumentException.class, () -> new CoordinatorElection.Builder()
-                .setGroupId(GROUP).setAdminClient(mock(AdminClient.class))
-                .setMemberIdsSupplier(() -> Set.of("a")).build());
+                .setGroupId(GROUP).setAdminClient(mock(AdminClient.class)).build());
     }
 
     @Test

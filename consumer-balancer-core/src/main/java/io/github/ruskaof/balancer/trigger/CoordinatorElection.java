@@ -11,7 +11,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 
 @Slf4j
 public class CoordinatorElection implements AutoCloseable {
@@ -19,7 +18,6 @@ public class CoordinatorElection implements AutoCloseable {
     private static final long DESCRIBE_TIMEOUT_MS = 30_000L;
 
     private final String groupId;
-    private final Supplier<Set<String>> memberIdsSupplier;
     private final MemberIdTracker memberIdTracker;
     private final AdminClient adminClient;
     private final boolean closeAdminClientOnShutdown;
@@ -32,7 +30,6 @@ public class CoordinatorElection implements AutoCloseable {
 
     private CoordinatorElection(Builder builder) {
         this.groupId = builder.groupId;
-        this.memberIdsSupplier = builder.memberIdsSupplier;
         this.memberIdTracker = builder.memberIdTracker;
         this.electionIntervalMs = builder.electionIntervalMs;
         if (builder.adminClient != null) {
@@ -67,10 +64,8 @@ public class CoordinatorElection implements AutoCloseable {
             groupStable = desc.groupState() == GroupState.STABLE;
             if (groupStable) memberIdTracker.reconcileMembership(groupId, desc.members());
 
-            Set<String> currentMemberIds = memberIdsSupplier.get();
             String selected = memberIdTracker.coordinatorMemberId(groupId, desc.members());
-            updateStatus(desc.groupState() == GroupState.STABLE
-                    && selected != null && currentMemberIds.contains(selected));
+            updateStatus(groupStable && selected != null);
         } catch (InterruptedException e) {
             groupStable = false;
             updateStatus(false);
@@ -156,7 +151,6 @@ public class CoordinatorElection implements AutoCloseable {
 
     public static class Builder {
         private String groupId;
-        private Supplier<Set<String>> memberIdsSupplier;
         private MemberIdTracker memberIdTracker;
         private long electionIntervalMs = 30_000;
         private Properties adminProps = new Properties();
@@ -173,7 +167,6 @@ public class CoordinatorElection implements AutoCloseable {
             if (memberIdTracker == null) {
                 throw new IllegalArgumentException("The assignor's MemberIdTracker is required for monitor election");
             }
-            if (memberIdsSupplier == null) memberIdsSupplier = () -> memberIdTracker.getCurrentMemberIds(groupId);
             if (adminClient == null && !adminProps.containsKey(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG)) {
                 throw new IllegalArgumentException("Bootstrap servers are required when admin client is not provided");
             }
@@ -183,11 +176,6 @@ public class CoordinatorElection implements AutoCloseable {
 
         public Builder setGroupId(String groupId) {
             this.groupId = groupId;
-            return this;
-        }
-
-        public Builder setMemberIdsSupplier(Supplier<Set<String>> memberIdsSupplier) {
-            this.memberIdsSupplier = memberIdsSupplier;
             return this;
         }
 

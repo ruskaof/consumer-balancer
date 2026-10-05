@@ -1,6 +1,5 @@
 package io.github.ruskaof.balancer;
 
-import io.github.ruskaof.balancer.instance.GroupInstanceUserData;
 import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import org.apache.kafka.clients.admin.MemberAssignment;
 import org.apache.kafka.clients.admin.MemberDescription;
@@ -101,10 +100,22 @@ class MonitoringTrackerTest {
     }
 
     @Test
-    void legacyStaticAssignmentCanBeRefreshedDuringCoordinatedUpgrade() {
-        tracker.onAssignment(GROUP, 1, null, "a", "s:a", "pod-a", TOPICS,
-                GroupInstanceUserData.encode(Map.of("a", "pod-a", "b", "pod-b")));
-        assertTrue(tracker.claimTopologyRefresh(GROUP, 1));
+    void memberIdsAloneDoNotProvideAMonitoringTopology() {
+        tracker.updateMemberId(GROUP, null, "a");
+        tracker.updateMemberId(GROUP, null, "b");
+        assertNull(tracker.resolveMembers(GROUP, liveGroup()));
+        assertNull(tracker.coordinatorMemberId(GROUP, liveGroup()));
+        assertFalse(tracker.claimTopologyRefresh(GROUP, 1));
+    }
+
+    @Test
+    void monitoringSnapshotsAreIsolatedByGroup() {
+        owner(1, SNAPSHOT, "a", "pod-a", "pod-a", 0, MEMBERS);
+        assertNotNull(tracker.resolveMembers(GROUP, liveGroup()));
+        assertNull(tracker.resolveMembers("other", liveGroup()));
+        tracker.prepareRebalance("other");
+        assertNotNull(tracker.resolveMembers(GROUP, liveGroup()));
+        assertEquals(0, tracker.rebalanceRevision(GROUP));
     }
 
     @Test

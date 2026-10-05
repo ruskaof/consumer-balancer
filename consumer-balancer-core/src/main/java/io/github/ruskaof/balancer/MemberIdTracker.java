@@ -1,7 +1,6 @@
 package io.github.ruskaof.balancer;
 
 import io.github.ruskaof.balancer.balance.GroupMember;
-import io.github.ruskaof.balancer.instance.GroupInstanceUserData;
 import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.MemberDescription;
@@ -33,7 +32,6 @@ import java.util.concurrent.TimeUnit;
 public class MemberIdTracker {
 
     private final Map<String, Set<String>> memberIdsByGroup = new ConcurrentHashMap<>();
-    private final Map<String, GroupInstances> instancesByGroup = new ConcurrentHashMap<>();
     private final Map<String, MonitoringState> monitoringByGroup = new ConcurrentHashMap<>();
 
     /** Identifies the assignment a trigger evaluation observes, including same-member rebalances. */
@@ -113,14 +111,10 @@ public class MemberIdTracker {
                 state.members = Map.of();
                 state.localAssignments.clear();
             }
-            state.observedAssignment = true;
             if (assignment == null) {
-                // A coordinated upgrade can replay the old assignment to a static member.
-                // Refresh known legacy data once through the normal recovery path. Absent or
-                // corrupt metadata (including an exceeded budget) must not cause a storm.
-                boolean legacy = GroupInstanceUserData.decode(userData).ok();
+                // Unavailable metadata (including an exceeded budget) must not cause a storm.
                 state.localAssignments.put(identity,
-                        new LocalAssignment(memberId, null, false, legacy));
+                        new LocalAssignment(memberId, null, false, false));
                 state.members = Map.of();
                 state.owner = null;
                 state.pendingRequest = false;
@@ -250,25 +244,10 @@ public class MemberIdTracker {
      */
     public List<GroupMember> resolveMembers(String groupId, Collection<MemberDescription> liveMembers) {
         MonitoringState state = monitoringByGroup.get(groupId);
-        if (state != null) {
-            synchronized (state) {
-                if (state.observedAssignment) {
-                    return needsRefresh(state) ? null : resolve(state, liveMembers);
-                }
-            }
+        if (state == null) return null;
+        synchronized (state) {
+            return needsRefresh(state) ? null : resolve(state, liveMembers);
         }
-        // Compatibility for explicitly supplied legacy trackers/custom integrations. New
-        // assignor callbacks never fall back to a previously cached legacy mapping.
-        Map<String, String> legacy = getInstanceIds(groupId);
-        Set<String> topics = new HashSet<>();
-        liveMembers.forEach(m -> m.assignment().topicPartitions().forEach(tp -> topics.add(tp.topic())));
-        List<GroupMember> result = new ArrayList<>();
-        for (MemberDescription member : liveMembers) {
-            String instance = legacy.get(member.consumerId());
-            if (instance == null) return null;
-            result.add(new GroupMember(member.consumerId(), instance, topics));
-        }
-        return result;
     }
 
     private static List<GroupMember> resolve(MonitoringState state, Collection<MemberDescription> liveMembers) {
@@ -293,7 +272,6 @@ public class MemberIdTracker {
 
     private static final class MonitoringState {
         int generation = -1;
-        boolean observedAssignment;
         UUID snapshotId;
         String owner;
         Map<String, MonitoringProtocol.Member> members = Map.of();
@@ -328,31 +306,4 @@ public class MemberIdTracker {
         return memberIds == null ? Set.of() : Set.copyOf(memberIds);
     }
 
-    /**
-     * Records the {@code memberId -> instanceId} mapping the group leader computed for
-     * {@code generationId}. Every consumer in this JVM receives — and reports — the same
-     * mapping for a generation, so repeated calls are idempotent; a mapping from an older
-     * generation never replaces a newer one, which is what keeps a consumer thread that
-     * ran late from resurrecting a stale view of the group.
-     */
-    public void recordInstanceIds(String groupId, int generationId, Map<String, String> instanceIdByMember) {
-        GroupInstances recorded = new GroupInstances(generationId, Map.copyOf(instanceIdByMember));
-        instancesByGroup.merge(groupId, recorded,
-                (current, incoming) -> incoming.generationId() >= current.generationId() ? incoming : current);
-        log.debug("Instance ids registered for generation {} (members: {}, group: {})",
-                generationId, recorded.instanceIdByMember().size(), groupId);
-    }
-
-    /**
-     * @return immutable {@code memberId -> instanceId} mapping last recorded for
-     *         {@code groupId}; empty for unknown groups
-     */
-    public Map<String, String> getInstanceIds(String groupId) {
-        GroupInstances instances = instancesByGroup.get(groupId);
-        return instances == null ? Map.of() : instances.instanceIdByMember();
-    }
-
-    /** One generation's mapping; immutable, so readers need no lock. */
-    private record GroupInstances(int generationId, Map<String, String> instanceIdByMember) {
-    }
 }

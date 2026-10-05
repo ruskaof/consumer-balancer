@@ -4,7 +4,6 @@ import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.balance.SortingRoundRobinBalanceService;
 import io.github.ruskaof.balancer.instance.InstanceIdResolver;
-import io.github.ruskaof.balancer.instance.InstanceUserData;
 import io.github.ruskaof.balancer.instance.MonitoringProtocol;
 import io.github.ruskaof.balancer.prometheus.TemplatedKafkaRatePromqlBuilder;
 import io.github.ruskaof.balancer.prometheus.PrometheusClient;
@@ -63,7 +62,8 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
     @Override
     public String name() {
-        return "load-aware";
+        // Kafka must not negotiate assignments between incompatible metadata formats.
+        return "load-aware-v2";
     }
 
     @Override
@@ -120,19 +120,18 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             GroupAssignment assignment,
             Map<String, Subscription> subscriptions) {
 
-        Map<String, String> instanceIdByMember = instanceIdByMember(subscriptions);
         Map<String, MonitoringProtocol.Member> members = new TreeMap<>();
         Map<String, MonitoringProtocol.Subscription> reported = new HashMap<>();
         String ownerIdentity = null;
         for (var entry : subscriptions.entrySet()) {
+            var report = requireSubscription(entry.getKey(), entry.getValue());
             String identity = MonitoringProtocol.identity(entry.getKey(), entry.getValue().groupInstanceId());
-            if (members.put(identity, new MonitoringProtocol.Member(instanceIdByMember.get(entry.getKey()),
+            if (members.put(identity, new MonitoringProtocol.Member(report.instanceId(),
                     Set.copyOf(entry.getValue().topics()))) != null) {
                 throw new IllegalArgumentException("Duplicate monitoring identity: " + identity);
             }
-            var report = MonitoringProtocol.readSubscription(entry.getValue().userData());
             reported.put(entry.getKey(), report);
-            if (report != null && report.monitoring()
+            if (report.monitoring()
                     && (ownerIdentity == null || identity.compareTo(ownerIdentity) < 0)) {
                 ownerIdentity = identity;
             }
@@ -151,8 +150,8 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             String identity = MonitoringProtocol.identity(memberId, subscription.groupInstanceId());
             var report = reported.get(memberId);
             ByteBuffer encoded = MonitoringProtocol.assignment(new MonitoringProtocol.Assignment(snapshotId,
-                    ownerIdentity, instanceIdByMember.get(memberId), Set.copyOf(subscription.topics()),
-                    report == null ? 0 : report.revision(), identity.equals(ownerIdentity) ? members : Map.of()));
+                    ownerIdentity, report.instanceId(), Set.copyOf(subscription.topics()),
+                    report.revision(), identity.equals(ownerIdentity) ? members : Map.of()));
             totalBytes += encoded.remaining();
             if (totalBytes > MonitoringProtocol.MAX_TOTAL_BYTES) {
                 log.warn("Monitoring topology for this {}-member group exceeds the {} byte metadata budget;"
@@ -221,50 +220,27 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
     /**
      * Builds the balance-service view of the group: each member with the instance id it
-     * reported through subscription userData. A member without a readable id (e.g. one
-     * running an older library version during a rolling upgrade) counts as its own
-     * single-member instance.
+     * reported through the current subscription protocol. Unreadable metadata leaves the
+     * outer assignment path to fall back to round-robin without guessing instance grouping.
      */
     private static List<GroupMember> groupMembersFrom(Map<String, Subscription> subscriptions) {
-        Map<String, String> instanceIdByMember = instanceIdByMember(subscriptions);
         List<GroupMember> members = new ArrayList<>(subscriptions.size());
-        List<String> absent = new ArrayList<>();
-        List<String> corrupt = new ArrayList<>();
         subscriptions.forEach((memberId, subscription) -> {
-            InstanceUserData.Status status = InstanceUserData.decode(subscription.userData()).status();
-            if (status == InstanceUserData.Status.ABSENT) {
-                absent.add(memberId);
-            } else if (status == InstanceUserData.Status.CORRUPT) {
-                corrupt.add(memberId);
-            }
+            var report = requireSubscription(memberId, subscription);
             members.add(new GroupMember(
                     memberId,
-                    instanceIdByMember.get(memberId),
+                    report.instanceId(),
                     Set.copyOf(subscription.topics())));
         });
-        if (!absent.isEmpty()) {
-            log.info("Members {} sent no instance id; treating each as its own instance"
-                    + " (expected while rolling out a version that reports instance ids)", absent);
-        }
-        if (!corrupt.isEmpty()) {
-            log.warn("Members {} sent unreadable instance-id userData; treating each as its own instance",
-                    corrupt);
-        }
         return members;
     }
 
-    /**
-     * The instance id each member reported, with the same fallback {@link #groupMembersFrom}
-     * applies: a member without a readable id is its own single-member instance. Silent —
-     * {@link #groupMembersFrom} does the reporting, and both run on one assignment.
-     */
-    private static Map<String, String> instanceIdByMember(Map<String, Subscription> subscriptions) {
-        Map<String, String> instanceIdByMember = new HashMap<>();
-        subscriptions.forEach((memberId, subscription) -> {
-            InstanceUserData.Decoded decoded = InstanceUserData.decode(subscription.userData());
-            instanceIdByMember.put(memberId, decoded.ok() ? decoded.instanceId() : memberId);
-        });
-        return instanceIdByMember;
+    private static MonitoringProtocol.Subscription requireSubscription(String memberId, Subscription subscription) {
+        var report = MonitoringProtocol.readSubscription(subscription.userData());
+        if (report == null) {
+            throw new IllegalArgumentException("Unreadable load-aware-v2 subscription metadata for member " + memberId);
+        }
+        return report;
     }
 
     private static Set<TopicPartition> getAllPartitions(Map<String, Integer> partitionsPerTopic) {

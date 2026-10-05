@@ -86,10 +86,13 @@ for a stable group; it can add a group rebalance after a static restart. A fresh
 matching acknowledgement stops recovery. Missing or corrupt metadata and an
 exceeded size budget do not initiate repeated refreshes.
 
-The new metadata format requires a coordinated group upgrade. Mixed-version
-proactive operation is not guaranteed until the new assignor produces a fresh
-topology. Recognized legacy assignments cached by Kafka for static members are
-refreshed through the same recovery path. See [upgrade guidance](../../README.md#upgrading-monitoring-metadata).
+Version 10.0.0 uses Kafka assignor protocol `load-aware-v2` and removes support
+for old metadata formats. Stop every old consumer, wait for the group's static
+memberships to expire (or explicitly remove them), then start the new version.
+Keep the same group ID and committed offsets. Mixed protocols can cause
+`InconsistentGroupProtocolException`; consumers affected by that error may need
+restarting. This is an interrupted upgrade, and readiness-gated rolling deployments
+can stall. See [upgrade guidance](../../README.md#upgrading-monitoring-metadata).
 
 | Pros | Cons |
 | --- | --- |

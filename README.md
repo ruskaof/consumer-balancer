@@ -23,7 +23,7 @@ Both modules are published to [Maven Central](https://central.sonatype.com/artif
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:9.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-spring-boot-starter:10.0.0")
 }
 ```
 
@@ -31,7 +31,7 @@ Using the assignor without Spring Boot? Depend on the core module directly:
 
 ```kotlin
 dependencies {
-    implementation("io.github.ruskaof:consumer-balancer-core:9.0.0")
+    implementation("io.github.ruskaof:consumer-balancer-core:10.0.0")
 }
 ```
 
@@ -118,7 +118,7 @@ The instance id resolves in this order:
 1. `consumer-balancer.instance-id` property (or the `assignor.load-aware.instance-id` consumer config) — set it when you want stable, human-readable instance labels (e.g. the pod name) in the leader's assignment logs;
 2. otherwise a **random id generated once per JVM** — every consumer in the JVM shares it, and distinct JVMs never collide, even on one machine.
 
-A member whose userData carries no readable instance id is treated as its own single-member instance for partition assignment. This fallback does not guarantee proactive monitoring during a mixed-version rollout; see [Upgrading monitoring metadata](#upgrading-monitoring-metadata).
+Every member must report the current subscription format. Missing or unreadable metadata causes round-robin assignment and disables proactive monitoring for that assignment; instance grouping is never guessed. Version 10 introduces a breaking protocol change; see [Upgrading monitoring metadata](#upgrading-monitoring-metadata).
 
 The leader sends a topology snapshot containing application-instance ids and actual topic subscriptions to **one monitoring consumer**. Every other consumer receives a small acknowledgement containing the monitor identity and its own expected instance id, topics and request revision. The monitor's `MemberIdTracker` combines that snapshot with the AdminClient's current assignments, so `ThresholdTrigger` uses the same instance grouping and subscription constraints as the assignor. The full topology is sent once, avoiding a copy for every consumer.
 
@@ -160,9 +160,15 @@ Every explicit rebalance request advances a revision included in subscription me
 
 ### Upgrading monitoring metadata
 
-Upgrade every member of a group together. The assignor name remains `load-aware`, but the monitoring assignment format and ownership contract have changed. Proactive operation is not guaranteed while old and new versions coexist; it resumes once upgraded members receive a fresh topology from the new assignor.
+**Version 10.0.0 requires an interrupted, coordinated upgrade of each consumer group.** The Kafka assignor protocol name changes from `load-aware` to `load-aware-v2`; the Java assignor class and `assignor.load-aware.*` configuration keys stay the same. Old subscription and assignment formats are no longer supported. Configure `LoadAwarePartitionAssignor` as the group's only assignment strategy during this migration; an additional shared strategy would allow Kafka to select a different assignor instead.
 
-Stopping static consumers does not immediately discard their broker-side assignments. On restart, a recognized legacy assignment requests a fresh assignment through the same recovery path. Verify that the group is stable and a monitor is active after the coordinated upgrade. Use `ConsumerGroupBalancers` (also used by the starter) to wire ownership, subscription revisions and recovery together; manual core integrations need the shared tracker described below.
+1. Stop all old consumers in the group. For Kubernetes, use a deployment procedure that stops every old pod before starting the new consumers; a rolling deployment that waits for new consumers to become ready can stall.
+2. Wait for Kafka to report that the group has no members. Static memberships remain until their session timeouts expire unless explicitly removed through Kafka's member-removal API. Stopping pods alone does not clear them immediately.
+3. Start all consumers on version 10.0.0 with the same `group.id` and committed offsets. Do not delete the group or reset its offsets. Verify that the group becomes stable and a monitor is active.
+
+Starting new consumers while old memberships remain can raise `InconsistentGroupProtocolException`. Kafka classifies this error as non-retriable, so affected consumers may need restarting after the old memberships are gone. The interruption includes any wait for static session expiry. Rolling back across this protocol boundary requires the same stop-and-start procedure.
+
+`InstanceUserData`, `GroupInstanceUserData`, `MemberIdTracker.recordInstanceIds/getInstanceIds`, and `CoordinatorElection.Builder.setMemberIdsSupplier` have been removed. Use `ConsumerGroupBalancers` (also used by the starter) to wire ownership, subscription revisions and recovery together; manual core integrations need the shared tracker described below. Automatic application-instance IDs and ordinary static-member restart recovery remain supported within version 10.
 
 ## Several consumer groups
 
@@ -366,7 +372,7 @@ balancers.start();
 // ... on shutdown: balancers.close(); admin.close();
 ```
 
-`ConsumerGroupBalancers` is the recommended entry point for proactive rebalance. If you construct the core components manually, pass one shared `MemberIdTracker` instance in the consumer configs and to `ThresholdTrigger`, and call `CoordinatorElection.Builder.setMemberIdTracker(tracker)`. The election builder requires this tracker and obtains its member-id supplier from it by default. `CoordinatorManager(election, trigger, initiator, checkIntervalMs)` automatically uses the election's tracker. This shared state connects monitor ownership to the delivered topology, updates subscription revisions, and enables recovery on nonmonitor JVMs. Existing manual integrations that only called `setMemberIdsSupplier(...)` must now also supply the assignor's tracker.
+`ConsumerGroupBalancers` is the recommended entry point for proactive rebalance. If you construct the core components manually, pass one shared `MemberIdTracker` instance in the consumer configs and to `ThresholdTrigger`, and call `CoordinatorElection.Builder.setMemberIdTracker(tracker)`. The election builder requires this tracker. `CoordinatorManager(election, trigger, initiator, checkIntervalMs)` automatically uses the election's tracker. This shared state connects monitor ownership to the delivered topology, updates subscription revisions, and enables recovery on nonmonitor JVMs.
 
 > Kafka logs a "supplied but isn't a known config" warning for these custom keys — that is harmless.
 
