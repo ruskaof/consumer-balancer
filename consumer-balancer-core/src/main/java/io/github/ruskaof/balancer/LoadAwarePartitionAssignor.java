@@ -33,9 +33,9 @@ import java.util.*;
  * evening traffic across application instances (pods/JVMs) first and across the members of
  * each instance second. Every member reports its instance id — configured or auto-resolved
  * by {@link InstanceIdResolver} — to the group leader through subscription userData, so the
- * leader can group co-located members. The leader sends the complete topology only to the
- * designated monitoring consumer; other members receive a small acknowledgement of their
- * own subscription. This keeps monitoring metadata proportional to group size.
+ * leader can group co-located members. By default the leader sends the complete topology
+ * only to the designated monitoring consumer; other members receive an acknowledgement of
+ * their own subscription. Cross-group balancing sends one topology per application instance.
  *
  * <p>Collaborators are taken from the consumer configs (see {@link LoadAwareAssignorConfig}):
  * {@code assignor.load-aware.weight-service}, {@code assignor.load-aware.balance-service} and
@@ -54,6 +54,7 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
     private WeightService weightService = null;
     private BalanceService balanceService = null;
     private MemberIdTracker memberIdTracker = null;
+    private CrossGroupLoadService crossGroupLoadService = null;
     private String instanceId = null;
     private String groupId = null;
     private Set<String> subscribedTopics = Set.of();
@@ -94,7 +95,8 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
     }
 
     /**
-     * Sends the group topology once, to the designated monitor. Static member identities
+     * Sends the group topology to the designated monitor, or once per instance when
+     * cross-group balancing is enabled. Static member identities
      * retain monitor ownership when Kafka replays an assignment after a process restart.
      * Every member also receives its expected instance id and subscriptions, so a replay
      * that no longer describes the current process can request a fresh assignment.
@@ -116,13 +118,14 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
         }
     }
 
-    private static GroupAssignment withMonitoringTopology(
+    private GroupAssignment withMonitoringTopology(
             GroupAssignment assignment,
             Map<String, Subscription> subscriptions) {
 
         Map<String, MonitoringProtocol.Member> members = new TreeMap<>();
         Map<String, MonitoringProtocol.Subscription> reported = new HashMap<>();
         String ownerIdentity = null;
+        String ownerInstance = null;
         for (var entry : subscriptions.entrySet()) {
             var report = requireSubscription(entry.getKey(), entry.getValue());
             String identity = MonitoringProtocol.identity(entry.getKey(), entry.getValue().groupInstanceId());
@@ -131,14 +134,32 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                 throw new IllegalArgumentException("Duplicate monitoring identity: " + identity);
             }
             reported.put(entry.getKey(), report);
-            if (report.monitoring()
-                    && (ownerIdentity == null || identity.compareTo(ownerIdentity) < 0)) {
+            boolean earlierOwner = ownerIdentity == null || (crossGroupLoadService == null
+                    ? identity.compareTo(ownerIdentity) < 0
+                    : report.instanceId().compareTo(ownerInstance) < 0
+                            || report.instanceId().equals(ownerInstance) && identity.compareTo(ownerIdentity) < 0);
+            if (report.monitoring() && earlierOwner) {
                 ownerIdentity = identity;
+                ownerInstance = report.instanceId();
             }
         }
         if (ownerIdentity == null) {
             log.debug("No member of this group advertises proactive monitoring support");
             return assignment;
+        }
+
+        // Cross-group decisions may run on a different JVM from this group's monitor.
+        // Give each instance one topology, without copying it to every local consumer.
+        Map<String, String> topologyRecipientByInstance = new TreeMap<>();
+        if (crossGroupLoadService != null) {
+            for (var entry : subscriptions.entrySet()) {
+                var report = reported.get(entry.getKey());
+                if (report.monitoring()) {
+                    String identity = MonitoringProtocol.identity(entry.getKey(), entry.getValue().groupInstanceId());
+                    topologyRecipientByInstance.merge(report.instanceId(), identity,
+                            (left, right) -> left.compareTo(right) <= 0 ? left : right);
+                }
+            }
         }
 
         UUID snapshotId = UUID.randomUUID();
@@ -151,7 +172,9 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
             var report = reported.get(memberId);
             ByteBuffer encoded = MonitoringProtocol.assignment(new MonitoringProtocol.Assignment(snapshotId,
                     ownerIdentity, report.instanceId(), Set.copyOf(subscription.topics()),
-                    report.revision(), identity.equals(ownerIdentity) ? members : Map.of()));
+                    report.revision(), identity.equals(ownerIdentity)
+                            || identity.equals(topologyRecipientByInstance.get(report.instanceId()))
+                            ? members : Map.of()));
             totalBytes += encoded.remaining();
             if (totalBytes > MonitoringProtocol.MAX_TOTAL_BYTES) {
                 log.warn("Monitoring topology for this {}-member group exceeds the {} byte metadata budget;"
@@ -173,11 +196,40 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
                 allPartitions, weightService.computeWeights(allPartitions));
         List<GroupMember> members = groupMembersFrom(subscriptions);
 
-        Map<String, List<TopicPartition>> assignment =
-                balanceService.computeOptimalAssignment(members, sanitized.weights());
+        Map<String, Double> otherGroupLoads = otherGroupLoads(members);
+        Map<String, List<TopicPartition>> assignment = otherGroupLoads.isEmpty()
+                ? balanceService.computeOptimalAssignment(members, sanitized.weights())
+                : balanceService.computeOptimalAssignment(members, sanitized.weights(), otherGroupLoads);
 
-        logAssignmentExplanation(members, sanitized, assignment);
+        if (otherGroupLoads.isEmpty()) {
+            logAssignmentExplanation(members, sanitized, assignment);
+        } else if (log.isInfoEnabled()) {
+            Map<String, Double> combinedLoads = new TreeMap<>();
+            for (GroupMember member : members) {
+                combinedLoads.putIfAbsent(member.instanceId(), otherGroupLoads.getOrDefault(member.instanceId(), 0.0));
+                for (TopicPartition partition : assignment.getOrDefault(member.memberId(), List.of())) {
+                    combinedLoads.merge(member.instanceId(), sanitized.weights().get(partition), Double::sum);
+                }
+            }
+            log.info("Cross-group assignment [group={}]: background loads={}, combined instance loads={}",
+                    groupId, otherGroupLoads, combinedLoads);
+        }
         return assignment;
+    }
+
+    private Map<String, Double> otherGroupLoads(List<GroupMember> members) {
+        if (crossGroupLoadService == null) return Map.of();
+        try {
+            Set<String> instances = new HashSet<>();
+            members.forEach(member -> instances.add(member.instanceId()));
+            var snapshot = crossGroupLoadService.snapshot(groupId, instances);
+            if (snapshot != null) return snapshot.loads();
+            log.info("Cross-group loads unavailable [group={}]; assigning using this group's weights", groupId);
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            log.warn("Could not read cross-group loads [group={}]; assigning using this group's weights", groupId, e);
+        }
+        return Map.of();
     }
 
     /**
@@ -271,6 +323,11 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
 
         this.memberIdTracker = ConfigInstanceResolver.resolveOrNull(
                 configs, LoadAwareAssignorConfig.MEMBER_ID_TRACKER, MemberIdTracker.class);
+        this.crossGroupLoadService = ConfigInstanceResolver.resolveOrNull(
+                configs, LoadAwareAssignorConfig.CROSS_GROUP_LOAD_SERVICE, CrossGroupLoadService.class);
+        if (crossGroupLoadService != null && memberIdTracker == null) {
+            throw new IllegalArgumentException("Cross-group balancing requires a shared member-id-tracker");
+        }
 
         this.instanceId = InstanceIdResolver.resolve(LoadAwareAssignorConfig.stringConfig(
                 configs, LoadAwareAssignorConfig.INSTANCE_ID, null));
@@ -402,6 +459,12 @@ public class LoadAwarePartitionAssignor extends AbstractPartitionAssignor implem
          * consumers, coordinator and trigger; {@code ConsumerGroupBalancers} wires it.
          */
         public static final String MEMBER_ID_TRACKER = "assignor.load-aware.member-id-tracker";
+        /**
+         * Optional shared {@link CrossGroupLoadService}. Normally supplied by
+         * {@link ConsumerGroupBalancers.Builder#crossGroupBalancing(boolean)}.
+         * Requires the registry's shared member tracker and registration of every group.
+         */
+        public static final String CROSS_GROUP_LOAD_SERVICE = "assignor.load-aware.cross-group-load-service";
         /**
          * Optional application-instance id shared by every consumer in this JVM (pod).
          * Members reporting the same id are balanced as one instance: traffic is evened

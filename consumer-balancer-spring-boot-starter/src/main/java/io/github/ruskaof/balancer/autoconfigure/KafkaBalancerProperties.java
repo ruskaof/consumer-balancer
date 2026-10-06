@@ -23,6 +23,15 @@ public class KafkaBalancerProperties {
     private boolean proactiveRebalanceEnabled = true;
 
     /**
+     * When true, balance each group's partitions against the sum of partition weights
+     * across consumer groups registered with the same ConsumerGroupBalancers registry
+     * on one Kafka cluster. All consumers on an application instance must report the
+     * same instance-id. Disabled by default; also applies to assignments when proactive
+     * rebalance is disabled.
+     */
+    private boolean crossGroupBalancingEnabled = false;
+
+    /**
      * Built-in weight store to auto-configure when no custom WeightService bean is
      * defined. "offset-rate" (the default) measures per-partition events/sec by
      * tracking partition end offsets through the Kafka AdminClient and needs no
@@ -102,6 +111,14 @@ public class KafkaBalancerProperties {
 
     public void setProactiveRebalanceEnabled(boolean proactiveRebalanceEnabled) {
         this.proactiveRebalanceEnabled = proactiveRebalanceEnabled;
+    }
+
+    public boolean isCrossGroupBalancingEnabled() {
+        return crossGroupBalancingEnabled;
+    }
+
+    public void setCrossGroupBalancingEnabled(boolean crossGroupBalancingEnabled) {
+        this.crossGroupBalancingEnabled = crossGroupBalancingEnabled;
     }
 
     public WeightStore getWeightStore() {

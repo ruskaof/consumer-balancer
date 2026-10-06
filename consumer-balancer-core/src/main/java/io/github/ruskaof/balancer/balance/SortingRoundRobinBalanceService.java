@@ -20,6 +20,10 @@ import java.util.*;
  * load on fewer, busier members. When every member is its own instance (e.g. members that did
  * not report an instance id), the instance level degenerates and this is plain member-level
  * least-loaded greedy.
+ *
+ * <p>When other-group loads are supplied, each instance starts with its total load from those
+ * groups. Member loads still start at zero, because those groups' work cannot be assigned to
+ * this group's members. Zero-weight partitions continue to spread by this group's counts.
  */
 @Slf4j
 public class SortingRoundRobinBalanceService implements BalanceService {
@@ -28,9 +32,24 @@ public class SortingRoundRobinBalanceService implements BalanceService {
     public Map<String, List<TopicPartition>> computeOptimalAssignment(
             Collection<GroupMember> members,
             Map<TopicPartition, Double> partitionWeights) {
+        return computeOptimalAssignment(members, partitionWeights, Map.of());
+    }
+
+    @Override
+    public Map<String, List<TopicPartition>> computeOptimalAssignment(
+            Collection<GroupMember> members,
+            Map<TopicPartition, Double> partitionWeights,
+            Map<String, Double> otherGroupLoadsByInstance) {
         if (members == null || members.isEmpty()) {
             throw new IllegalArgumentException("No members provided for assignment");
         }
+        Objects.requireNonNull(otherGroupLoadsByInstance, "otherGroupLoadsByInstance");
+        otherGroupLoadsByInstance.forEach((instanceId, load) -> {
+            if (load == null || !Double.isFinite(load) || load < 0.0) {
+                throw new IllegalArgumentException("Other-group load for instance '" + instanceId
+                        + "' must be finite and nonnegative: " + load);
+            }
+        });
 
         Map<String, List<TopicPartition>> assignment = new TreeMap<>();
         Map<String, Double> memberLoads = new TreeMap<>();
@@ -44,7 +63,8 @@ public class SortingRoundRobinBalanceService implements BalanceService {
             }
             memberLoads.put(member.memberId(), 0.0);
             topicsByMember.put(member.memberId(), member.subscribedTopics());
-            instanceLoads.putIfAbsent(member.instanceId(), 0.0);
+            instanceLoads.putIfAbsent(member.instanceId(),
+                    otherGroupLoadsByInstance.getOrDefault(member.instanceId(), 0.0));
             instanceCounts.putIfAbsent(member.instanceId(), 0);
             membersByInstance.computeIfAbsent(member.instanceId(), id -> new TreeSet<>())
                     .add(member.memberId());

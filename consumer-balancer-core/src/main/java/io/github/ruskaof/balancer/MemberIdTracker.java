@@ -22,7 +22,8 @@ import java.util.concurrent.TimeUnit;
  *       {@link #coordinatorMemberId(String, Collection)} to validate the designated monitor;</li>
  *   <li>{@link io.github.ruskaof.balancer.trigger.threshold.ThresholdTrigger} consumes
  *       {@link #resolveMembers(String, Collection)} for current member ids, instance grouping
- *       and subscription eligibility. Only the monitor receives the full topology.</li>
+ *       and subscription eligibility. With cross-group balancing, one consumer per
+ *       instance receives the full topology; otherwise only the monitor does.</li>
  * </ul>
  *
  * <p>Ids of consumers that left the group are not removed eagerly; that is harmless
@@ -134,7 +135,7 @@ public class MemberIdTracker {
                     && state.revision == assignment.revision();
             state.localAssignments.put(identity,
                     new LocalAssignment(memberId, assignment.snapshotId(), matches, !matches));
-            if (identity.equals(state.owner)) {
+            if (identity.equals(state.owner) || !assignment.members().isEmpty()) {
                 state.members = matches ? assignment.members() : Map.of();
             }
             if (matches) {

@@ -20,8 +20,9 @@ import java.util.TreeSet;
 import java.util.UUID;
 
 /**
- * Versioned monitoring metadata. Only the monitoring member receives the group topology;
- * other members receive an acknowledgement of their own instance and subscriptions.
+ * Versioned monitoring metadata. By default only the monitoring member receives the group
+ * topology; cross-group balancing delivers it once per instance. Other members receive an
+ * acknowledgement of their own instance and subscriptions.
  * Static Kafka identities are deliberately separate from application-instance identities.
  *
  * <p>The assignment wire format is a magic, version, snapshot UUID, owner identity and

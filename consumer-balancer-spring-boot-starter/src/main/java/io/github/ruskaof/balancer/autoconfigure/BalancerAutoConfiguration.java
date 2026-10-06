@@ -81,6 +81,7 @@ public class BalancerAutoConfiguration {
                 .memberIdTracker(memberIdTracker)
                 .instanceId(properties.getInstanceId())
                 .proactiveRebalance(properties.isProactiveRebalanceEnabled())
+                .crossGroupBalancing(properties.isCrossGroupBalancingEnabled())
                 .imbalanceThreshold(properties.getRebalanceLoadImbalanceThreshold())
                 .damping(properties.toRebalanceDamping())
                 .electionInterval(properties.getCoordinator().getElectionInterval())

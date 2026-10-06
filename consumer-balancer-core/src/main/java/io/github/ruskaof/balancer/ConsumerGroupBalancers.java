@@ -62,6 +62,7 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
     private final MemberIdTracker memberIdTracker;
     private final String instanceId;
     private final boolean proactiveRebalance;
+    private final CrossGroupLoadService crossGroupLoadService;
     private final double imbalanceThreshold;
     private final RebalanceDamping damping;
     private final Duration electionInterval;
@@ -87,6 +88,10 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
         this.electionInterval = requirePositive(builder.electionInterval, "electionInterval");
         this.triggerCheckInterval = requirePositive(builder.triggerCheckInterval, "triggerCheckInterval");
         this.tags = Map.copyOf(builder.tags);
+        this.crossGroupLoadService = builder.crossGroupBalancing
+                ? new CrossGroupLoadService(adminClient, memberIdTracker, weightService,
+                        () -> getGroups().stream().map(ConsumerGroupBalancer::getGroupId).toList())
+                : null;
     }
 
     public static Builder builder() {
@@ -99,16 +104,19 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
      * {@code assignor.load-aware.*} keys. Put them into the config map of every consumer factory
      * whose groups this registry balances — put them in first when the factory lists further
      * assignors, e.g. while migrating a group, so its own strategy wins. The
-     * {@link MemberIdTracker} is left out while proactive rebalance is off: nothing would read
-     * what the assignor reports to it.
+     * {@link MemberIdTracker} is left out only when both proactive rebalance and cross-group
+     * balancing are off.
      */
     public Map<String, Object> assignorConfigs() {
         Map<String, Object> configs = new HashMap<>();
         configs.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG, LoadAwarePartitionAssignor.class.getName());
         configs.put(LoadAwareAssignorConfig.WEIGHT_SERVICE, weightService);
         configs.put(LoadAwareAssignorConfig.BALANCE_SERVICE, balanceService);
-        if (proactiveRebalance) {
+        if (proactiveRebalance || crossGroupLoadService != null) {
             configs.put(LoadAwareAssignorConfig.MEMBER_ID_TRACKER, memberIdTracker);
+        }
+        if (crossGroupLoadService != null) {
+            configs.put(LoadAwareAssignorConfig.CROSS_GROUP_LOAD_SERVICE, crossGroupLoadService);
         }
         if (instanceId != null && !instanceId.isBlank()) {
             configs.put(LoadAwareAssignorConfig.INSTANCE_ID, instanceId);
@@ -220,6 +228,10 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
         return proactiveRebalance;
     }
 
+    public boolean isCrossGroupBalancingEnabled() {
+        return crossGroupLoadService != null;
+    }
+
     /** Extra tags for this registry's meters, e.g. {@code cluster=b}; empty by default. */
     public Map<String, String> getTags() {
         return tags;
@@ -266,7 +278,8 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
                         spec.imbalanceThreshold,
                         balanceService,
                         spec.damping,
-                        Clock.systemUTC());
+                        Clock.systemUTC(),
+                        crossGroupLoadService);
         CoordinatorElection election = new CoordinatorElection.Builder()
                 .setGroupId(groupId)
                 .setMemberIdTracker(memberIdTracker)
@@ -354,6 +367,7 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
         private MemberIdTracker memberIdTracker;
         private String instanceId;
         private boolean proactiveRebalance = true;
+        private boolean crossGroupBalancing;
         private double imbalanceThreshold = DEFAULT_IMBALANCE_THRESHOLD;
         private RebalanceDamping damping = RebalanceDamping.defaults();
         private Duration electionInterval = DEFAULT_ELECTION_INTERVAL;
@@ -402,6 +416,19 @@ public final class ConsumerGroupBalancers implements AutoCloseable {
          */
         public Builder proactiveRebalance(boolean proactiveRebalance) {
             this.proactiveRebalance = proactiveRebalance;
+            return this;
+        }
+
+        /**
+         * Include other registered groups' load when assigning partitions and evaluating
+         * the default threshold trigger. Default: false. Enable on all participating
+         * instances and register the same groups on each, before starting consumers.
+         * Each instance must consume every scoped nonempty group to receive its topology;
+         * matching participating instances also let the monitors serialize corrections.
+         * Groups must use comparable weight units and belong to this registry's cluster.
+         */
+        public Builder crossGroupBalancing(boolean crossGroupBalancing) {
+            this.crossGroupBalancing = crossGroupBalancing;
             return this;
         }
 
