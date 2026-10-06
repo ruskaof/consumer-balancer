@@ -1,6 +1,7 @@
 package io.github.ruskaof.balancer.trigger.threshold;
 
 import io.github.ruskaof.balancer.MemberIdTracker;
+import io.github.ruskaof.balancer.CrossGroupLoadService;
 import io.github.ruskaof.balancer.balance.BalanceService;
 import io.github.ruskaof.balancer.balance.GroupMember;
 import io.github.ruskaof.balancer.trigger.RebalanceDamping;
@@ -72,6 +73,9 @@ public class ThresholdTrigger implements RebalanceTrigger {
     private final BalanceService balanceService;
     private final RebalanceDamping damping;
     private final Clock clock;
+    private final CrossGroupLoadService crossGroupLoadService;
+    private Map<String, Map<String, Set<TopicPartition>>> lastOtherGroupAssignments;
+    private Map<String, MemberIdTracker.SnapshotToken> lastOtherGroupTopologies;
 
     // All mutable state is thread-confined to the coordinator's scheduler thread.
     private Map<String, Set<TopicPartition>> lastCheckedAssignment;
@@ -107,6 +111,21 @@ public class ThresholdTrigger implements RebalanceTrigger {
             BalanceService balanceService,
             RebalanceDamping damping,
             Clock clock) {
+        this(adminClient, groupId, memberIdTracker, weightService, threshold,
+                balanceService, damping, clock, null);
+    }
+
+    /** Includes other registered groups' load when {@code crossGroupLoadService} is non-null. */
+    public ThresholdTrigger(
+            AdminClient adminClient,
+            String groupId,
+            MemberIdTracker memberIdTracker,
+            WeightService weightService,
+            double threshold,
+            BalanceService balanceService,
+            RebalanceDamping damping,
+            Clock clock,
+            CrossGroupLoadService crossGroupLoadService) {
         this.adminClient = Objects.requireNonNull(adminClient, "adminClient");
         this.groupId = Objects.requireNonNull(groupId, "groupId");
         this.memberIdTracker = Objects.requireNonNull(memberIdTracker, "memberIdTracker");
@@ -115,11 +134,21 @@ public class ThresholdTrigger implements RebalanceTrigger {
         this.balanceService = Objects.requireNonNull(balanceService, "balanceService");
         this.damping = Objects.requireNonNull(damping, "damping");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.crossGroupLoadService = crossGroupLoadService;
         this.status = snapshot();
     }
 
     @Override
     public boolean shouldTrigger() {
+        if (crossGroupLoadService != null) {
+            synchronized (crossGroupLoadService) {
+                return evaluateAndRecord();
+            }
+        }
+        return evaluateAndRecord();
+    }
+
+    private boolean evaluateAndRecord() {
         long started = System.nanoTime();
         EvaluationOutcome outcome;
         try {
@@ -133,6 +162,9 @@ public class ThresholdTrigger implements RebalanceTrigger {
             }
             log.error("Could not run ThresholdTrigger", e);
             outcome = EvaluationOutcome.ERROR;
+        }
+        if (outcome == EvaluationOutcome.FIRED && crossGroupLoadService != null) {
+            crossGroupLoadService.reserveRebalance(groupId);
         }
         recordEvaluation(outcome, System.nanoTime() - started);
         return outcome == EvaluationOutcome.FIRED;
@@ -197,12 +229,30 @@ public class ThresholdTrigger implements RebalanceTrigger {
             weightsKnownAgain();
         }
 
-        var optimalAssignment = balanceService.computeOptimalAssignment(members, weights);
+        Map<String, Double> otherGroupLoads = Map.of();
+        if (crossGroupLoadService != null) {
+            var snapshot = crossGroupLoadService.snapshot(groupId, Set.copyOf(instanceIdByMember.values()));
+            if (snapshot == null) {
+                log.debug("ThresholdTrigger skipped [group={}]: cross-group load unavailable", groupId);
+                return EvaluationOutcome.CROSS_GROUP_LOAD_UNAVAILABLE;
+            }
+            otherGroupLoads = snapshot.loads();
+            if (!snapshot.assignments().equals(lastOtherGroupAssignments)
+                    || !snapshot.topologies().equals(lastOtherGroupTopologies)) {
+                violatedChecks = 0;
+                balancedChecks = 0;
+            }
+            lastOtherGroupAssignments = snapshot.assignments();
+            lastOtherGroupTopologies = snapshot.topologies();
+        }
+        var optimalAssignment = otherGroupLoads.isEmpty()
+                ? balanceService.computeOptimalAssignment(members, weights)
+                : balanceService.computeOptimalAssignment(members, weights, otherGroupLoads);
 
         var currentMaxLoaded = maxInstanceLoad(
-                groupByInstance(currentAssignment, instanceIdByMember), weights);
+                groupByInstance(currentAssignment, instanceIdByMember), weights, otherGroupLoads);
         var optimalMaxLoaded = maxInstanceLoad(
-                groupByInstance(optimalAssignment, instanceIdByMember), weights);
+                groupByInstance(optimalAssignment, instanceIdByMember), weights, otherGroupLoads);
 
         if (optimalMaxLoaded == null || currentMaxLoaded == null) {
             log.debug("ThresholdTrigger evaluated [group={}]: no members with assignments, shouldTrigger=false",
@@ -463,11 +513,12 @@ public class ThresholdTrigger implements RebalanceTrigger {
 
     private static InstanceLoad maxInstanceLoad(
             Map<String, List<TopicPartition>> assignmentByInstance,
-            Map<TopicPartition, Double> weights) {
+            Map<TopicPartition, Double> weights,
+            Map<String, Double> otherGroupLoads) {
         InstanceLoad maxLoaded = null;
 
         for (var instance : assignmentByInstance.keySet()) {
-            double weightSum = 0;
+            double weightSum = otherGroupLoads.getOrDefault(instance, 0.0);
 
             for (var partition : assignmentByInstance.get(instance)) {
                 weightSum += weights.getOrDefault(partition, PartitionWeightDefaults.MISSING);
@@ -503,6 +554,8 @@ public class ThresholdTrigger implements RebalanceTrigger {
          * grouped into instances and was not judged.
          */
         INSTANCES_UNKNOWN,
+        /** Another registered group's current assignment, topology or weights were unavailable. */
+        CROSS_GROUP_LOAD_UNAVAILABLE,
         /**
          * No partition had a usable weight, so the loads would only have counted partitions;
          * the group was not judged. Normal for the first check of a freshly elected

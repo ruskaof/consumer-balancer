@@ -184,6 +184,144 @@ class SortingRoundRobinBalanceServiceTest {
     }
 
     @Test
+    void offsetsOtherGroupLoadByAssigningMoreWorkToTheLessLoadedInstance() {
+        String topic = "orders";
+        List<GroupMember> members = List.of(
+                new GroupMember("a1", "pod-a", Set.of(topic)),
+                new GroupMember("b1", "pod-b", Set.of(topic)));
+        Map<TopicPartition, Double> weights = new LinkedHashMap<>();
+        for (int p = 0; p < 6; p++) {
+            weights.put(new TopicPartition(topic, p), 20.0);
+        }
+
+        Map<String, List<TopicPartition>> assignment = loadAware.computeOptimalAssignment(
+                members, weights, Map.of("pod-a", 80.0));
+
+        assertEquals(Map.of("pod-a", 20.0, "pod-b", 100.0),
+                loadPerInstance(assignment, members, weights),
+                "both instances should carry 100 total load after including other groups");
+        assertEveryPartitionAssignedOnce(assignment, weights);
+    }
+
+    @Test
+    void countsOtherGroupLoadOncePerInstanceRegardlessOfMemberCount() {
+        String topic = "orders";
+        List<GroupMember> members = List.of(
+                new GroupMember("a1", "pod-a", Set.of(topic)),
+                new GroupMember("b1", "pod-b", Set.of(topic)),
+                new GroupMember("b2", "pod-b", Set.of(topic)),
+                new GroupMember("b3", "pod-b", Set.of(topic)));
+        Map<TopicPartition, Double> weights = new LinkedHashMap<>();
+        for (int p = 0; p < 6; p++) {
+            weights.put(new TopicPartition(topic, p), 10.0);
+        }
+
+        Map<String, List<TopicPartition>> assignment = loadAware.computeOptimalAssignment(
+                members, weights, Map.of("pod-a", 20.0, "pod-b", 20.0));
+
+        assertEquals(Map.of("pod-a", 30.0, "pod-b", 30.0),
+                loadPerInstance(assignment, members, weights));
+        for (String member : List.of("b1", "b2", "b3")) {
+            assertEquals(1, assignment.get(member).size(),
+                    "other-group load must not skew balancing within the instance");
+        }
+        assertEveryPartitionAssignedOnce(assignment, weights);
+    }
+
+    @Test
+    void otherGroupLoadsPreserveTopicEligibilityAndIgnoreNonparticipatingInstances() {
+        List<GroupMember> members = List.of(
+                new GroupMember("a1", "pod-a", Set.of("a")),
+                new GroupMember("b1", "pod-b", Set.of("a", "b")));
+        TopicPartition a = new TopicPartition("a", 0);
+        TopicPartition b = new TopicPartition("b", 0);
+        Map<TopicPartition, Double> weights = Map.of(a, 10.0, b, 100.0);
+
+        Map<String, List<TopicPartition>> assignment = loadAware.computeOptimalAssignment(
+                members, weights, Map.of("pod-b", 1000.0, "absent-pod", 0.0));
+
+        assertEquals(Map.of("a1", List.of(a), "b1", List.of(b)), assignment,
+                "only subscribed members may receive a partition even with a high other-group load");
+        assertEveryPartitionAssignedOnce(assignment, weights);
+    }
+
+    @Test
+    void emptyOrZeroOtherGroupLoadsPreserveExistingAssignments() {
+        List<GroupMember> members = List.of(
+                new GroupMember("a1", "pod-a", Set.of("orders")),
+                new GroupMember("b1", "pod-b", Set.of("orders")),
+                new GroupMember("b2", "pod-b", Set.of("orders")));
+        Map<TopicPartition, Double> weights = Map.of(
+                new TopicPartition("orders", 0), 100.0,
+                new TopicPartition("orders", 1), 10.0,
+                new TopicPartition("orders", 2), 1.0,
+                new TopicPartition("orders", 3), 0.0);
+
+        Map<String, List<TopicPartition>> existing = loadAware.computeOptimalAssignment(members, weights);
+
+        assertEquals(existing, loadAware.computeOptimalAssignment(members, weights, Map.of()));
+        assertEquals(existing, loadAware.computeOptimalAssignment(
+                members, weights, Map.of("pod-a", 0.0, "pod-b", 0.0)));
+        assertEquals(existing, loadAware.computeOptimalAssignment(
+                members, weights, Map.of("absent-pod", 1000.0)));
+    }
+
+    @Test
+    void otherGroupLoadsDoNotChangeZeroWeightPartitionSpreading() {
+        List<GroupMember> members = List.of(
+                new GroupMember("a1", "pod-a", Set.of("orders")),
+                new GroupMember("b1", "pod-b", Set.of("orders")),
+                new GroupMember("b2", "pod-b", Set.of("orders")));
+        Map<TopicPartition, Double> weights = new LinkedHashMap<>();
+        for (int p = 0; p < 8; p++) {
+            weights.put(new TopicPartition("orders", p), 0.0);
+        }
+
+        Map<String, List<TopicPartition>> assignment = loadAware.computeOptimalAssignment(
+                members, weights, Map.of("pod-a", 1000.0));
+
+        assertEquals(Map.of("pod-a", 4, "pod-b", 4), countPerInstance(assignment, members));
+        assertEquals(2, assignment.get("b1").size());
+        assertEquals(2, assignment.get("b2").size());
+        assertEveryPartitionAssignedOnce(assignment, weights);
+    }
+
+    @Test
+    void rejectsInvalidOtherGroupLoadsEvenForNonparticipatingInstancesOrEmptyAssignments() {
+        List<GroupMember> members = List.of(new GroupMember("a1", "pod-a", Set.of("orders")));
+        Map<TopicPartition, Double> weights = Map.of(new TopicPartition("orders", 0), 1.0);
+
+        for (String instance : List.of("pod-a", "absent-pod")) {
+            for (double load : new double[]{-1.0, Double.NaN, Double.POSITIVE_INFINITY,
+                    Double.NEGATIVE_INFINITY}) {
+                assertThrows(IllegalArgumentException.class, () -> loadAware.computeOptimalAssignment(
+                        members, weights, Map.of(instance, load)));
+                assertThrows(IllegalArgumentException.class, () -> loadAware.computeOptimalAssignment(
+                        members, Map.of(), Map.of(instance, load)));
+            }
+        }
+        Map<String, Double> nullLoad = new HashMap<>();
+        nullLoad.put("pod-a", null);
+        assertThrows(IllegalArgumentException.class,
+                () -> loadAware.computeOptimalAssignment(members, weights, nullLoad));
+        assertThrows(NullPointerException.class,
+                () -> loadAware.computeOptimalAssignment(members, weights, null));
+    }
+
+    @Test
+    void legacyBalanceServicesRemainFunctionalAndRejectUnsupportedOtherGroupLoads() {
+        List<GroupMember> members = List.of(new GroupMember("a1", "pod-a", Set.of("orders")));
+        TopicPartition partition = new TopicPartition("orders", 0);
+        Map<TopicPartition, Double> weights = Map.of(partition, 1.0);
+        Map<String, List<TopicPartition>> expected = Map.of("a1", List.of(partition));
+        BalanceService legacy = (groupMembers, partitionWeights) -> expected;
+
+        assertSame(expected, legacy.computeOptimalAssignment(members, weights, Map.of()));
+        assertThrows(UnsupportedOperationException.class,
+                () -> legacy.computeOptimalAssignment(members, weights, Map.of("pod-a", 1.0)));
+    }
+
+    @Test
     void spreadsZeroWeightPartitionsEvenlyAcrossInstances() {
         String topic = "orders";
         List<GroupMember> members = List.of(

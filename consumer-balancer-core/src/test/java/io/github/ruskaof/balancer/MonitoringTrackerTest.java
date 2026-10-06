@@ -81,6 +81,37 @@ class MonitoringTrackerTest {
     }
 
     @Test
+    void replicatedTopologyLetsNonownerResolveMembersWithoutTakingCoordinatorOwnership() {
+        callback(1, SNAPSHOT, "b", "s:b", "pod-b", "pod-b", 0, MEMBERS);
+
+        assertNotNull(tracker.resolveMembers(GROUP, liveGroup()));
+        assertNull(tracker.coordinatorMemberId(GROUP, liveGroup()));
+        assertFalse(tracker.claimTopologyRefresh(GROUP, 1));
+    }
+
+    @Test
+    void nonownerTopologyIsInvalidatedUntilTheNewGenerationDeliversItsReplacement() {
+        callback(1, SNAPSHOT, "b", "s:b", "pod-b", "pod-b", 0, MEMBERS);
+        assertNotNull(tracker.resolveMembers(GROUP, liveGroup()));
+        UUID next = UUID.randomUUID();
+        callback(2, next, "b", "s:b", "pod-b", "pod-b", 0, Map.of());
+        assertNull(tracker.resolveMembers(GROUP, liveGroup()));
+
+        callback(2, next, "b", "s:b", "pod-b", "pod-b", 0, MEMBERS);
+        assertNotNull(tracker.resolveMembers(GROUP, liveGroup()));
+        assertNull(tracker.coordinatorMemberId(GROUP, liveGroup()));
+    }
+
+    @Test
+    void staleInstanceAcknowledgementCannotMakeANonownerTopologyUsable() {
+        callback(1, SNAPSHOT, "b", "s:b", "restarted-pod-b", "pod-b", 0, MEMBERS);
+
+        assertNull(tracker.resolveMembers(GROUP, liveGroup()));
+        assertNull(tracker.coordinatorMemberId(GROUP, liveGroup()));
+        assertTrue(tracker.claimTopologyRefresh(GROUP, 1));
+    }
+
+    @Test
     void unacknowledgedRefreshRetriesWithBackoffAndANewRevision() {
         callback(1, SNAPSHOT, "b", "s:b", "new-jvm", "pod-b", 0, Map.of());
         assertTrue(tracker.claimTopologyRefresh(GROUP, 1));
