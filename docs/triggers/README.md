@@ -21,7 +21,7 @@ nonleader consumer is visible to Kafka as a subscription change.
 
 `ConsumerGroupBalancers` wires the assignor, election, trigger and manager to one
 shared `MemberIdTracker`; this is the recommended API for proactive monitoring.
-For manual core wiring, follow the [configuration instructions](../../README.md#assignor-configuration-consumer-configs),
+For manual core wiring, follow the [configuration instructions](../configuration.md#proactive-rebalance-in-plain-java),
 including the election's required `setMemberIdTracker`. The manager obtains the
 same tracker from that election automatically.
 
