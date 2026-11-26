@@ -58,9 +58,9 @@ The comparison runs all three strategies side by side in the
 
 ## Results
 
-The graph below comes from an earlier run with at least one partition per
-consumer, before instance-aware balancing. CI writes the chart for the current
-setup to `test-out/result-default.png`.
+The graph below comes from an earlier run of the synthetic workload with at
+least one partition per consumer, before instance-aware balancing. CI writes
+the chart for the current setup to `test-out/result-default.png`.
 
 ![Per-instance throughput for round-robin, load-aware, and cooperative-sticky under a shifting skewed load](assignors_comparison.png)
 

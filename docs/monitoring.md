@@ -4,17 +4,16 @@
 
 ## Reading the assignment log
 
-After a rebalance, the Kafka group leader logs the assignment at INFO under `io.github.ruskaof.balancer.LoadAwarePartitionAssignor`. The leader and the proactive monitor may be different consumers. Here is an example with one partition heavier than the ideal share for an instance.
+After a rebalance, the Kafka group leader logs the assignment at INFO under `io.github.ruskaof.balancer.LoadAwarePartitionAssignor`. The leader and the proactive monitor may be different consumers. This synthetic log excerpt illustrates three partitions with weights of 90, 20 and 10.
 
 ```text
-Load-aware assignment computed [instances=3, members=6, partitions=12, totalWeight=1050, defaultedWeights=3]:
-  instance pod-a: load=500.0 (47.6% of total), partitions=1, members=2
-  instance pod-b: load=300.0 (28.6% of total), partitions=6, members=2
-  instance pod-c: load=250.0 (23.8% of total), partitions=5, members=2
-  skew: max instance load 500.0 (pod-a) is +42.9% above the ideal even share 350.0
+Load-aware assignment computed [instances=2, members=2, partitions=3, totalWeight=120.0, defaultedWeights=0]:
+  instance pod-a: load=90.0 (75.0% of total), partitions=1, members=1
+  instance pod-b: load=30.0 (25.0% of total), partitions=2, members=1
+  skew: max instance load 90.0 (pod-a) is +50.0% above the ideal even share 60.0
 ```
 
-The `skew` line compares the busiest instance with the arithmetic mean (`1050 / 3 = 350`). Even the best placement here must put the 500-weight partition somewhere. The trigger compares the current peak with the peak under its proposed placement, so it can report a ratio of `1.0` for this distribution.
+The `skew` line compares the busiest instance with the arithmetic mean (`120 / 2 = 60`). One partition alone weighs 90, so any placement has a peak of at least 90. The trigger compares the current peak with the peak under its proposed placement, giving a ratio of `90 / 90 = 1.0` for this distribution.
 
 The `unevenness factors` lines explain what constrained the assignment.
 

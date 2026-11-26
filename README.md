@@ -57,7 +57,7 @@ This enables load-aware placement on Kafka rebalances. To have the library initi
 
 ## Instance-aware balancing
 
-Consider four partitions receiving 80, 40, 30 and 10 records/s. With two pods subscribed to the topic, the assignor puts the 80-record/s partition on one pod and the other three on the second. Each pod receives 80 records/s, even though they own different numbers of partitions.
+In a synthetic example, four partitions receive 80, 40, 30 and 10 records/s. With two pods subscribed to the topic, the assignor puts the 80-record/s partition on one pod and the other three on the second. Each pod receives 80 records/s, even though they own different numbers of partitions.
 
 The group leader places the heaviest partition first. For each partition it chooses the least-loaded instance with a subscriber to that topic, then the least-loaded subscriber on that instance. Zero-weight partitions are distributed by count. A single hot partition stays on one consumer, which limits how evenly the group can share the work.
 
@@ -101,7 +101,7 @@ Run the unit tests from the repository root with JDK 21 and Gradle (`8.14.4` in 
 gradle test
 ```
 
-The Docker test runs round-robin, cooperative-sticky and load-aware consumer groups against the same shifting workload. It writes a per-instance throughput chart to `test-out/result-default.png`. See the [benchmark and sample chart](docs/perftest/README.md).
+The Docker test runs round-robin, cooperative-sticky and load-aware consumer groups against the same synthetic workload. It shifts traffic between partitions and writes a per-instance throughput chart to `test-out/result-default.png`. See the [benchmark and sample chart](docs/perftest/README.md).
 
 ```bash
 docker compose --env-file docker/test-env.properties -f docker/docker-compose.yaml up --abort-on-container-exit
